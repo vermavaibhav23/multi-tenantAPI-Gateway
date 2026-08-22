@@ -1,0 +1,81 @@
+x-gateway-env: &gateway-env
+  USE_SQLITE: "False"
+  MYSQL_HOST: db
+  MYSQL_DATABASE: gateway_db
+  MYSQL_USER: gateway
+  MYSQL_PASSWORD: gateway
+  REDIS_URL: redis://redis:6379/0
+
+x-gateway-base: &gateway-base
+  build: .
+  environment: *gateway-env
+  depends_on:
+    db:
+      condition: service_started
+    redis:
+      condition: service_started
+
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api-gateway-1
+      - api-gateway-2
+      - api-gateway-3
+
+  api-gateway-migrate:
+    <<: *gateway-base
+    command: python manage.py migrate
+
+  api-gateway-1:
+    <<: *gateway-base
+    command: python manage.py runserver 0.0.0.0:8000
+    expose:
+      - "8000"
+    depends_on:
+      api-gateway-migrate:
+        condition: service_completed_successfully
+
+  api-gateway-2:
+    <<: *gateway-base
+    command: python manage.py runserver 0.0.0.0:8000
+    expose:
+      - "8000"
+    depends_on:
+      api-gateway-migrate:
+        condition: service_completed_successfully
+
+  api-gateway-3:
+    <<: *gateway-base
+    command: python manage.py runserver 0.0.0.0:8000
+    expose:
+      - "8000"
+    depends_on:
+      api-gateway-migrate:
+        condition: service_completed_successfully
+
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: gateway_db
+      MYSQL_USER: gateway
+      MYSQL_PASSWORD: gateway
+      MYSQL_ROOT_PASSWORD: root
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+volumes:
+  mysql_data:
