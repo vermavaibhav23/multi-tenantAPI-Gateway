@@ -58,6 +58,60 @@ services:
       api-gateway-migrate:
         condition: service_completed_successfully
 
+  fashion-user-service:
+    build: .
+    command: python dummy_backend/server.py
+    environment:
+      BACKEND_SERVICE_NAME: fashion-user-service
+      BACKEND_PORT: "8000"
+    expose:
+      - "8000"
+
+  fashion-product-service:
+    build: .
+    command: python dummy_backend/server.py
+    environment:
+      BACKEND_SERVICE_NAME: fashion-product-service
+      BACKEND_PORT: "8000"
+    expose:
+      - "8000"
+
+  fashion-order-service:
+    build: .
+    command: python dummy_backend/server.py
+    environment:
+      BACKEND_SERVICE_NAME: fashion-order-service
+      BACKEND_PORT: "8000"
+    expose:
+      - "8000"
+
+  banking-user-service:
+    build: .
+    command: python dummy_backend/server.py
+    environment:
+      BACKEND_SERVICE_NAME: banking-user-service
+      BACKEND_PORT: "8000"
+    expose:
+      - "8000"
+
+  banking-account-service:
+    build: .
+    command: python dummy_backend/server.py
+    environment:
+      BACKEND_SERVICE_NAME: banking-account-service
+      BACKEND_PORT: "8000"
+    expose:
+      - "8000"
+
+  banking-payment-service:
+    build: .
+    command: python dummy_backend/server.py
+    environment:
+      BACKEND_SERVICE_NAME: banking-payment-service
+      BACKEND_PORT: "8000"
+    expose:
+      - "8000"
+
   db:
     image: mysql:8.0
     restart: unless-stopped

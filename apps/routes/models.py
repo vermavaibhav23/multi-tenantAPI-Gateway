@@ -28,6 +28,12 @@ class BackendService(models.Model):
 
 
 class Route(models.Model):
+    AUTH_API_KEY_ONLY = 'api_key_only'
+    AUTH_API_KEY_AND_JWT = 'api_key_and_jwt'
+    AUTH_POLICY_CHOICES = [
+        (AUTH_API_KEY_ONLY, 'API key only'),
+        (AUTH_API_KEY_AND_JWT, 'API key and JWT'),
+    ]
     METHOD_CHOICES = [
         ('GET', 'GET'),
         ('POST', 'POST'),
@@ -41,8 +47,8 @@ class Route(models.Model):
     method = models.CharField(max_length=10, choices=METHOD_CHOICES, default='GET')
     path = models.CharField(max_length=200)
     target_url = models.URLField(max_length=500, blank=True, default='')
+    auth_policy = models.CharField(max_length=20, choices=AUTH_POLICY_CHOICES, default=AUTH_API_KEY_ONLY)
     is_active = models.BooleanField(default=True)
-    cache_ttl_seconds = models.PositiveIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

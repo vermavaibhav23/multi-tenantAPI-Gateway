@@ -27,7 +27,7 @@ The gateway provides authentication, application API keys, dynamic routing, Redi
 Customer request:
 
 ```http
-GET /api/products
+GET /gateway/products
 Authorization: Bearer <customer_jwt>
 X-API-Key: ak_live_xxx
 ```
@@ -88,49 +88,41 @@ apps/analytics          Request logs and analytics summary
 Developer/customer auth:
 
 ```http
-POST /api/auth/register
-POST /api/auth/login
-POST /api/auth/refresh
-POST /login
+POST /admin-api/auth/register
+POST /admin-api/auth/login
+POST /admin-api/auth/refresh
 ```
 
 Developer configuration:
 
 ```http
-GET  /api/projects
-POST /api/projects
-GET  /api/applications
-POST /api/applications
-POST /api/keys
-POST /api/keys/<id>/revoke
-GET  /api/services
-POST /api/services
-GET  /api/routes
-POST /api/routes
+GET  /admin-api/projects
+POST /admin-api/projects
+GET  /admin-api/applications
+POST /admin-api/applications
+POST /admin-api/keys
+POST /admin-api/keys/<id>/revoke
+GET  /admin-api/services
+POST /admin-api/services
+GET  /admin-api/routes
+POST /admin-api/routes
 ```
 
-Customer-facing gateway:
+Backend proxy gateway:
 
 ```http
-GET    /api/products
-GET    /api/products/1
-GET    /api/users/1
-POST   /api/orders
-GET    /api/orders/101
-GET    /api/transactions
-```
-
-Legacy gateway path still works:
-
-```http
-GET /gateway/products
+GET    /gateway/products
+GET    /gateway/products/1
+GET    /gateway/users/1
+POST   /gateway/orders
+GET    /gateway/orders/101
+GET    /gateway/transactions
 ```
 
 Analytics:
 
 ```http
-GET /analytics
-GET /api/analytics/summary
+GET /admin-api/analytics/summary
 ```
 
 ## Example Route Configuration
@@ -139,10 +131,7 @@ Create project:
 
 ```json
 {
-  "name": "Ecommerce Platform API",
-  "plan": "free",
-  "rate_limit": 100,
-  "window_seconds": 60
+  "name": "Ecommerce Platform API"
 }
 ```
 
@@ -153,6 +142,8 @@ Create partner/client applications:
 { "name": "Myntra", "plan": "premium" }
 { "name": "Amazon", "plan": "premium" }
 ```
+
+When an application is created, the gateway also creates its first API key and returns the raw key once in the response.
 
 Create backend services:
 
@@ -177,10 +168,28 @@ Create product route attached to the Product Service:
   "backend_service": 1,
   "method": "GET",
   "path": "/products",
-  "cache_ttl_seconds": 60,
-  "target_url": "http://real-product-service.internal/products"
+  "target_url": "http://fashion-product-service:8000/products",
+  "auth_policy": "api_key_only"
 }
 ```
+
+Use `"auth_policy": "api_key_and_jwt"` for user-protected backend routes such as orders, profile, or payment.
+
+Docker includes separate dummy backend services for end-to-end gateway demos. Example route target URLs:
+
+```text
+Fashion routes:
+GET  /users    -> http://fashion-user-service:8000/users
+GET  /products -> http://fashion-product-service:8000/products
+POST /orders   -> http://fashion-order-service:8000/orders
+
+Banking routes:
+GET  /users    -> http://banking-user-service:8000/users
+GET  /accounts -> http://banking-account-service:8000/accounts
+POST /payments -> http://banking-payment-service:8000/payments
+```
+
+Each dummy backend returns JSON with its service name, method, and received path.
 
 If no target is configured for a route, the gateway returns:
 
@@ -196,7 +205,7 @@ HTTP 503
 
 ## Rate Limiting Design
 
-The gateway applies rate limiting before forwarding a request. The counter is based on the API key, so one key has one shared limit across all routes it calls. The limit comes from the application's plan, with optional custom numeric overrides.
+The gateway applies token bucket rate limiting before forwarding a request. The bucket is based on the API key, so one key has one shared limit across all routes it calls. The bucket capacity and refill speed come from the application's plan.
 
 Example:
 
@@ -205,15 +214,15 @@ Normal application: 100 requests/minute per API key
 Premium application: 1000 requests/minute per API key
 ```
 
-If Redis is available, counters are stored there. If Redis is unavailable during local development or tests, the gateway falls back to an in-memory counter. When the limit is exceeded:
+If Redis is available, bucket state is stored there. If Redis is unavailable during local development or tests, the gateway falls back to an in-memory bucket. When the limit is exceeded:
 
 ```text
-Redis key   = gateway_rate:api_key:<api_key_id>
-Redis value = request count
-TTL         = 60 seconds
+Redis key    = gateway_rate:api_key:<api_key_id>
+Redis fields = tokens, updated_at
+TTL          = 120 seconds
 ```
 
-On every request, the gateway increments the counter. The first request sets the TTL. When the count becomes greater than the plan limit, the gateway blocks the request.
+On every request, the gateway refills tokens based on elapsed time, consumes one token if available, and blocks the request when no token is available.
 
 ```http
 HTTP 429
@@ -227,14 +236,14 @@ HTTP 429
 
 ## Product Cache Design
 
-GET requests can be cached by setting `cache_ttl_seconds` on the route.
+GET responses are cached by the gateway for 60 seconds.
 
 ```text
 First request  -> Gateway -> Service response -> cache response
 Next request   -> Gateway -> Redis/cache -> return response
 ```
 
-Non-GET requests invalidate cached responses for that route's backend service inside the project.
+Non-GET requests invalidate cached GET responses inside the project.
 
 ## Gateway Load Balancing Design
 
@@ -308,6 +317,12 @@ nginx             Public entry point on 8000
 api-gateway-1     Django gateway instance
 api-gateway-2     Django gateway instance
 api-gateway-3     Django gateway instance
+fashion-user-service       Dummy backend service
+fashion-product-service    Dummy backend service
+fashion-order-service      Dummy backend service
+banking-user-service       Dummy backend service
+banking-account-service    Dummy backend service
+banking-payment-service    Dummy backend service
 db                MySQL shared by all gateway instances
 redis             Redis shared by all gateway instances
 ```

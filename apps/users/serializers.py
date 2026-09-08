@@ -27,19 +27,19 @@ class UserRegisterSerializer(serializers.ModelSerializer):
 class ProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = Project
-        fields = ('id', 'name', 'slug', 'description', 'plan', 'rate_limit', 'window_seconds', 'created_at')
+        fields = ('id', 'name', 'slug', 'description', 'created_at')
         read_only_fields = ('id', 'slug', 'created_at')
 
 
 class ApplicationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Application
-        fields = ('id', 'project', 'name', 'slug', 'plan', 'is_active', 'rate_limit', 'window_seconds', 'created_at')
-        read_only_fields = ('id', 'created_at')
+        fields = ('id', 'project', 'name', 'slug', 'plan', 'is_active', 'created_at')
+        read_only_fields = ('id', 'slug', 'created_at')
 
 
 class APIKeySerializer(serializers.ModelSerializer):
     class Meta:
         model = APIKey
-        fields = ('id', 'application', 'name', 'prefix', 'created_at', 'expires_at', 'revoked_at')
-        read_only_fields = ('id', 'prefix', 'created_at', 'revoked_at')
+        fields = ('id', 'application', 'name', 'created_at', 'expires_at', 'revoked_at')
+        read_only_fields = ('id', 'created_at', 'revoked_at')

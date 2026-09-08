@@ -14,6 +14,36 @@ from routes.models import Route
 class RedisRateLimiter:
     _memory_store = {}
     _lock = threading.Lock()
+    _TOKEN_BUCKET_SCRIPT = """
+local key = KEYS[1]
+local capacity = tonumber(ARGV[1])
+local window_seconds = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local refill_rate = capacity / window_seconds
+
+local bucket = redis.call('HMGET', key, 'tokens', 'updated_at')
+local tokens = tonumber(bucket[1])
+local updated_at = tonumber(bucket[2])
+
+if tokens == nil or updated_at == nil then
+    tokens = capacity
+    updated_at = now
+else
+    local elapsed = math.max(0, now - updated_at)
+    tokens = math.min(capacity, tokens + (elapsed * refill_rate))
+    updated_at = now
+end
+
+local allowed = 0
+if tokens >= 1 then
+    tokens = tokens - 1
+    allowed = 1
+end
+
+redis.call('HSET', key, 'tokens', tokens, 'updated_at', updated_at)
+redis.call('EXPIRE', key, math.ceil(window_seconds * 2))
+return allowed
+"""
 
     def __init__(self, redis_url=None):
         self.redis_url = redis_url or settings.REDIS_URL
@@ -22,13 +52,14 @@ class RedisRateLimiter:
     def _fallback_allow_request(self, key, limit, window_seconds):
         now = time.time()
         with self._lock:
-            count, expires_at = self._memory_store.get(key, (0, 0))
-            if expires_at <= now:
-                count = 0
-                expires_at = now + window_seconds
-            if count >= limit:
+            tokens, updated_at = self._memory_store.get(key, (float(limit), now))
+            refill_rate = float(limit) / float(window_seconds)
+            elapsed = max(0, now - updated_at)
+            tokens = min(float(limit), tokens + (elapsed * refill_rate))
+            if tokens < 1:
+                self._memory_store[key] = (tokens, now)
                 return False
-            self._memory_store[key] = (count + 1, expires_at)
+            self._memory_store[key] = (tokens - 1, now)
             return True
 
     def allow_request(self, key, limit, window_seconds):
@@ -36,12 +67,8 @@ class RedisRateLimiter:
             self.client.ping()
         except Exception:
             return self._fallback_allow_request(key, limit, window_seconds)
-        current = self.client.incr(key)
-        if current == 1:
-            self.client.expire(key, window_seconds)
-        if current <= limit:
-            return True
-        return False
+        allowed = self.client.eval(self._TOKEN_BUCKET_SCRIPT, 1, key, limit, window_seconds, time.time())
+        return int(allowed) == 1
 
 
 class RouteResolver:

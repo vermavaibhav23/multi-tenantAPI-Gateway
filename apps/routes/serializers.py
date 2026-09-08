@@ -29,8 +29,8 @@ class RouteSerializer(serializers.ModelSerializer):
             'method',
             'path',
             'target_url',
+            'auth_policy',
             'is_active',
-            'cache_ttl_seconds',
             'created_at',
         )
         read_only_fields = ('id', 'created_at', 'downstream_service')
