@@ -67,7 +67,7 @@ class GatewayProxyView(APIView):
             customer_id = request.user.id if getattr(request, 'user', None) and request.user.is_authenticated else 'anonymous'
             query_string = request.META.get('QUERY_STRING', '')
             cache_target_url = f'{target_url}?{query_string}' if query_string else target_url
-            cache_key = f'gateway_cache:{application.id}:{customer_id}:{request.method}:{cache_target_url}'
+            cache_key = f'gateway_cache:{application.id}:{customer_id}:{cache_target_url}'
             cached = cache_client.get(cache_key)
             if cached is not None:
                 GatewayLogger.log_request(project, request.api_key, route, route.path, request, 200, 0.0)
