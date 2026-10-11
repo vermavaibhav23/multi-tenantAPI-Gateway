@@ -205,33 +205,19 @@ HTTP 503
 
 ## Rate Limiting Design
 
-The gateway applies token bucket rate limiting before forwarding a request. The bucket is based on the API key, so one key has one shared limit across all routes it calls. The bucket capacity and refill speed come from the application's plan.
+GateScale uses **fixed-window rate limiting** per API key, with counters shared in Redis across all gateway instances.
 
-Example:
+- Normal: 100 requests per 60-second window.
+- Premium: 1000 requests per 60-second window.
+- Windows align to Unix epoch boundaries (for example, 12:00:00–12:00:59).
+- A Redis Lua script uses server time to choose the window, atomically increments its counter using `INCR`, and sets `EXPIRE` on first use.
+- Requests above the limit return HTTP 429, and the counter resets at the next fixed window.
+- A local in-memory fallback is available if Redis is down, but it is **not shared across gateway replicas**.
+- Fixed windows can allow boundary bursts near the end/start of adjacent windows.
 
 ```text
-Normal application: 100 requests/minute per API key
-Premium application: 1000 requests/minute per API key
-```
-
-If Redis is available, bucket state is stored there. If Redis is unavailable during local development or tests, the gateway falls back to an in-memory bucket. When the limit is exceeded:
-
-```text
-Redis key    = gateway_rate:api_key:<api_key_id>
-Redis fields = tokens, updated_at
-TTL          = 120 seconds
-```
-
-On every request, the gateway refills tokens based on elapsed time, consumes one token if available, and blocks the request when no token is available.
-
-```http
-HTTP 429
-```
-
-```json
-{
-  "error": "Rate limit exceeded"
-}
+Redis key: gateway_rate:api_key:<api_key_id>:<window_id>
+Redis value: number of requests in that window
 ```
 
 ## Product Cache Design

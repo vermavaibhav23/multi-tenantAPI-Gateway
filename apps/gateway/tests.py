@@ -10,7 +10,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from authentication.models import APIKey, Application
 from routes.models import BackendService, Route
 from users.models import Project
-from gateway.services import ProductResponseCache, RedisRateLimiter
+from gateway.services import ProductResponseCache, RedisFixedWindowRateLimiter
 
 
 class GatewayRoutingTests(APITestCase):
@@ -25,7 +25,7 @@ class GatewayRoutingTests(APITestCase):
         self.api_key, self.raw_key = APIKey.create_for_project(self.project, 'gateway-key')
         cache.clear()
         ProductResponseCache._memory_store.clear()
-        RedisRateLimiter._memory_store.clear()
+        RedisFixedWindowRateLimiter._memory_store.clear()
 
     def _auth_headers(self):
         token = RefreshToken.for_user(self.user).access_token
@@ -190,15 +190,22 @@ class GatewayRoutingTests(APITestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 429)
 
-    def test_token_bucket_rate_limiter_refills_over_time(self):
-        limiter = RedisRateLimiter()
-        RedisRateLimiter._memory_store.clear()
+    def test_fixed_window_limiter_resets_only_at_boundary(self):
+        limiter = RedisFixedWindowRateLimiter()
+        RedisFixedWindowRateLimiter._memory_store.clear()
+        with patch('gateway.services.time.time', side_effect=[0, 10, 30, 59, 60]):
+            self.assertTrue(limiter._fallback_allow_request('window:test', 2, 60))
+            self.assertTrue(limiter._fallback_allow_request('window:test', 2, 60))
+            self.assertFalse(limiter._fallback_allow_request('window:test', 2, 60))
+            self.assertFalse(limiter._fallback_allow_request('window:test', 2, 60))
+            self.assertTrue(limiter._fallback_allow_request('window:test', 2, 60))
 
-        with patch('gateway.services.time.time', side_effect=[0, 0, 29, 30]):
-            self.assertTrue(limiter._fallback_allow_request('bucket:test', 2, 60))
-            self.assertTrue(limiter._fallback_allow_request('bucket:test', 2, 60))
-            self.assertFalse(limiter._fallback_allow_request('bucket:test', 2, 60))
-            self.assertTrue(limiter._fallback_allow_request('bucket:test', 2, 60))
+    def test_fixed_window_redis_uses_atomic_script(self):
+        limiter = RedisFixedWindowRateLimiter()
+        with patch.object(limiter.client, 'eval', return_value=1) as run_script:
+            self.assertTrue(limiter.allow_request('gateway_rate:api_key:5', 100, 60))
+            run_script.assert_called_once()
+            self.assertIn("redis.call('INCR', key)", run_script.call_args.args[0])
 
     def test_product_cache_hit_avoids_second_backend_call(self):
         route = Route.objects.create(

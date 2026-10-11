@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 
 from routes.models import Route
 
-from .services import GatewayLogger, GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RouteResolver
+from .services import GatewayLogger, GatewayRequestProxy, ProductResponseCache, RedisFixedWindowRateLimiter, RouteResolver
 
 
 GATEWAY_CACHE_TTL_SECONDS = 60
@@ -56,7 +56,7 @@ class GatewayProxyView(APIView):
             return JsonResponse({'detail': 'API key is not linked to an active application.'}, status=401)
         limit, window_seconds = application.resolved_rate_limit()
         rate_key = f'gateway_rate:api_key:{request.api_key.id}'
-        if not RedisRateLimiter().allow_request(rate_key, limit, window_seconds):
+        if not RedisFixedWindowRateLimiter().allow_request(rate_key, limit, window_seconds):
             return JsonResponse({'error': 'Rate limit exceeded'}, status=429)
 
         cache_client = ProductResponseCache()
