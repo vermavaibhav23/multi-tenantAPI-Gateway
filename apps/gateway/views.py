@@ -7,7 +7,7 @@ from rest_framework.views import APIView
 
 from routes.models import Route
 
-from .services import GatewayLogger, GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RouteResolver
+from .services import GatewayLogger, GatewayRequestProxy, ProductResponseCache, RedisFixedWindowRateLimiter, RouteResolver
 
 
 GATEWAY_CACHE_TTL_SECONDS = 60
@@ -56,7 +56,7 @@ class GatewayProxyView(APIView):
             return JsonResponse({'detail': 'API key is not linked to an active application.'}, status=401)
         limit, window_seconds = application.resolved_rate_limit()
         rate_key = f'gateway_rate:api_key:{request.api_key.id}'
-        if not RedisRateLimiter().allow_request(rate_key, limit, window_seconds):
+        if not RedisFixedWindowRateLimiter().allow_request(rate_key, limit, window_seconds):
             return JsonResponse({'error': 'Rate limit exceeded'}, status=429)
 
         cache_client = ProductResponseCache()
@@ -67,7 +67,7 @@ class GatewayProxyView(APIView):
             customer_id = request.user.id if getattr(request, 'user', None) and request.user.is_authenticated else 'anonymous'
             query_string = request.META.get('QUERY_STRING', '')
             cache_target_url = f'{target_url}?{query_string}' if query_string else target_url
-            cache_key = f'gateway_cache:{application.id}:{customer_id}:{request.method}:{cache_target_url}'
+            cache_key = f'gateway_cache:{application.id}:{customer_id}:{cache_target_url}'
             cached = cache_client.get(cache_key)
             if cached is not None:
                 GatewayLogger.log_request(project, request.api_key, route, route.path, request, 200, 0.0)

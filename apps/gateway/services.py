@@ -11,38 +11,24 @@ from analytics.models import RequestLog
 from routes.models import Route
 
 
-class RedisRateLimiter:
+class RedisFixedWindowRateLimiter:
     _memory_store = {}
     _lock = threading.Lock()
-    _TOKEN_BUCKET_SCRIPT = """
-local key = KEYS[1]
-local capacity = tonumber(ARGV[1])
+    _FIXED_WINDOW_SCRIPT = """
+local base_key = KEYS[1]
+local limit = tonumber(ARGV[1])
 local window_seconds = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
-local refill_rate = capacity / window_seconds
+local now = redis.call('TIME')
+local epoch_seconds = tonumber(now[1])
+local window_id = math.floor(epoch_seconds / window_seconds)
+local key = base_key .. ':' .. window_id
 
-local bucket = redis.call('HMGET', key, 'tokens', 'updated_at')
-local tokens = tonumber(bucket[1])
-local updated_at = tonumber(bucket[2])
-
-if tokens == nil or updated_at == nil then
-    tokens = capacity
-    updated_at = now
-else
-    local elapsed = math.max(0, now - updated_at)
-    tokens = math.min(capacity, tokens + (elapsed * refill_rate))
-    updated_at = now
+local count = redis.call('INCR', key)
+if count == 1 then
+    local remaining = window_seconds - (epoch_seconds % window_seconds)
+    redis.call('EXPIRE', key, remaining + 1)
 end
-
-local allowed = 0
-if tokens >= 1 then
-    tokens = tokens - 1
-    allowed = 1
-end
-
-redis.call('HSET', key, 'tokens', tokens, 'updated_at', updated_at)
-redis.call('EXPIRE', key, math.ceil(window_seconds * 2))
-return allowed
+return count <= limit and 1 or 0
 """
 
     def __init__(self, redis_url=None):
@@ -51,24 +37,23 @@ return allowed
 
     def _fallback_allow_request(self, key, limit, window_seconds):
         now = time.time()
+        window_id = int(now // window_seconds)
+        bucket_key = (key, window_id)
         with self._lock:
-            tokens, updated_at = self._memory_store.get(key, (float(limit), now))
-            refill_rate = float(limit) / float(window_seconds)
-            elapsed = max(0, now - updated_at)
-            tokens = min(float(limit), tokens + (elapsed * refill_rate))
-            if tokens < 1:
-                self._memory_store[key] = (tokens, now)
-                return False
-            self._memory_store[key] = (tokens - 1, now)
-            return True
+            count = self._memory_store.get(bucket_key, 0) + 1
+            self._memory_store[bucket_key] = count
+            # Remove old windows so the fallback cannot grow indefinitely.
+            for old_key in list(self._memory_store):
+                if old_key[1] < window_id - 1:
+                    del self._memory_store[old_key]
+            return count <= limit
 
     def allow_request(self, key, limit, window_seconds):
         try:
-            self.client.ping()
-        except Exception:
+            allowed = self.client.eval(self._FIXED_WINDOW_SCRIPT, 1, key, limit, window_seconds)
+            return int(allowed) == 1
+        except redis.exceptions.RedisError:
             return self._fallback_allow_request(key, limit, window_seconds)
-        allowed = self.client.eval(self._TOKEN_BUCKET_SCRIPT, 1, key, limit, window_seconds, time.time())
-        return int(allowed) == 1
 
 
 class RouteResolver:
