@@ -1,12 +1,14 @@
 import time
+from urllib.parse import urlsplit
 
-from django.http import HttpResponse, JsonResponse
+from django.conf import settings
 from django.core.exceptions import ValidationError
-from routes.destinations import validate_target_url
+from django.http import HttpResponse, JsonResponse
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework.views import APIView
 
+from routes.destinations import validate_target_url
 from routes.models import Route
 
 from .services import GatewayLogger, GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RouteResolver
@@ -39,37 +41,47 @@ class GatewayProxyView(APIView):
         if not project:
             return JsonResponse({'detail': 'No project associated with the API key.'}, status=401)
 
+        def reject(detail, status_code, route=None, error_key='detail'):
+            GatewayLogger.log_request(project, request.api_key, route,
+                                      route.path if route else route_path[:255], request, status_code, 0.0)
+            return JsonResponse({error_key: detail}, status=status_code)
+
         route = RouteResolver.get_route_for_request(project, request.method, route_path)
         if not route:
-            return JsonResponse({'detail': 'Route not found.'}, status=404)
+            return reject('Route not found.', 404)
         if not request.api_key.can_access(route):
-            return JsonResponse({'detail': 'Application is not allowed to access this route.'}, status=403)
+            return reject('Application is not allowed to access this route.', 403, route)
         if route.auth_policy == Route.AUTH_API_KEY_AND_JWT:
             try:
                 auth_result = JWTAuthentication().authenticate(request)
             except (InvalidToken, TokenError):
-                return JsonResponse({'detail': 'Invalid customer token.'}, status=401)
+                return reject('Invalid customer token.', 401, route)
             if auth_result is None:
-                return JsonResponse({'detail': 'Missing customer bearer token.'}, status=401)
+                return reject('Missing customer bearer token.', 401, route)
             request.user, request.auth = auth_result
 
         application = getattr(request, 'application', None)
         if not application:
-            return JsonResponse({'detail': 'API key is not linked to an active application.'}, status=401)
+            return reject('API key is not linked to an active application.', 401, route)
         limit, window_seconds = application.resolved_rate_limit()
-        rate_key = f'gateway_rate:api_key:{request.api_key.id}'
+        rate_key = f'gateway_rate:application:{application.id}'
         if not RedisRateLimiter().allow_request(rate_key, limit, window_seconds):
-            return JsonResponse({'error': 'Rate limit exceeded'}, status=429)
+            return reject('Rate limit exceeded', 429, route, error_key='error')
 
         cache_client = ProductResponseCache()
         target_url = GatewayRequestProxy.build_target_url(route, route_path)
         try:
             validate_target_url(target_url)
         except ValidationError:
-            return JsonResponse({'detail': 'Backend destination is not allowed.'}, status=403)
+            return reject('Backend destination is not allowed.', 403, route)
         cache_key = None
         project_cache_prefix = f'gateway_cache:v2:{project.id}:'
-        if request.method == 'GET':
+        cache_allowed = (
+            request.method == 'GET' and route.auth_policy == Route.AUTH_API_KEY_ONLY
+            and urlsplit(target_url).hostname in settings.GATEWAY_CACHEABLE_BACKEND_HOSTS
+            and not request.headers.get('Authorization') and not request.headers.get('Cookie')
+        )
+        if cache_allowed:
             customer_id = request.user.id if getattr(request, 'user', None) and request.user.is_authenticated else 'anonymous'
             query_string = request.META.get('QUERY_STRING', '')
             cache_target_url = f'{target_url}?{query_string}' if query_string else target_url
@@ -82,7 +94,7 @@ class GatewayProxyView(APIView):
             cache_client.invalidate_prefix(project_cache_prefix)
 
         if not route.target_url:
-            return JsonResponse({'detail': 'No healthy backends for this route.'}, status=503)
+            return reject('No healthy backends for this route.', 503, route)
 
         started = time.time()
         response = GatewayRequestProxy.proxy(request, target_url)
@@ -94,6 +106,9 @@ class GatewayProxyView(APIView):
 
         content_type = response.headers.get('content-type', 'application/json')
         GatewayLogger.log_request(project, request.api_key, route, route.path, request, response.status_code, elapsed_ms)
-        if cache_key and response.status_code < 400 and 'application/json' in content_type:
+        cache_control = response.headers.get('cache-control', '').lower()
+        if (cache_key and response.status_code == 200 and 'application/json' in content_type
+                and not response.headers.get('set-cookie') and not response.headers.get('vary')
+                and not any(directive in cache_control for directive in ('no-store', 'no-cache', 'private'))):
             cache_client.set(cache_key, response.text, GATEWAY_CACHE_TTL_SECONDS)
         return HttpResponse(response.content, status=response.status_code, content_type=content_type)

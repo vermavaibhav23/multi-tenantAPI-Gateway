@@ -1,5 +1,7 @@
 ﻿from django.db.models import Avg, Count
 from rest_framework import permissions
+from rest_framework.exceptions import NotFound, ValidationError
+from authentication.models import Application
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -7,11 +9,20 @@ from .models import RequestLog
 
 
 class AnalyticsSummaryView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
         project_ids = list(request.user.projects.values_list('id', flat=True))
         logs = RequestLog.objects.filter(project_id__in=project_ids)
+        application_id = request.query_params.get('application_id')
+        if application_id is not None:
+            try:
+                application_id = int(application_id)
+            except (ValueError, TypeError):
+                raise ValidationError({'application_id': 'A numeric application ID is required.'})
+            if not Application.objects.filter(id=application_id, project_id__in=project_ids).exists():
+                raise NotFound('Application not found.')
+            logs = logs.filter(application_id=application_id)
         total_requests = logs.count()
         average_latency = logs.aggregate(avg_latency=Avg('latency_ms')).get('avg_latency') or 0.0
         success_count = logs.filter(status_code__lt=400).count()

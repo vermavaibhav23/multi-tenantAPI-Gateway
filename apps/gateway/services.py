@@ -4,10 +4,11 @@ import time
 import httpx
 import redis
 from django.conf import settings
-from routes.destinations import validate_target_url
+from django.db.models import Q
 from django.utils import timezone
 
 from analytics.models import RequestLog
+from routes.destinations import validate_target_url
 from routes.models import Route
 
 
@@ -47,7 +48,7 @@ return allowed
 
     def __init__(self, redis_url=None):
         self.redis_url = redis_url or settings.REDIS_URL
-        self.client = redis.Redis.from_url(self.redis_url, decode_responses=True)
+        self.client = redis.Redis.from_url(self.redis_url, decode_responses=True, socket_connect_timeout=0.5, socket_timeout=0.5)
 
     def _fallback_allow_request(self, key, limit, window_seconds):
         now = time.time()
@@ -79,7 +80,10 @@ class RouteResolver:
     def get_route_for_request(project, method, path):
         normalized = RouteResolver.normalize_path(path)
         # Read current configuration on every request, across all gateway workers.
-        routes = Route.objects.filter(project=project, method=method, is_active=True).order_by('-path')
+        routes = Route.objects.select_related('backend_service').filter(
+            Q(backend_service__isnull=True) | Q(backend_service__project=project, backend_service__is_active=True),
+            project=project, method=method, is_active=True,
+        ).order_by('-path')
         for route in routes:
             route_path = RouteResolver.normalize_path(route.path)
             if route_path == normalized or normalized.startswith(f'{route_path}/'):
@@ -98,7 +102,13 @@ class GatewayRequestProxy:
     @staticmethod
     def proxy(request, target_url):
         validate_target_url(target_url)
-        headers = {k: v for k, v in request.headers.items() if k.lower() not in {'host', 'content-length', 'connection'}}
+        excluded = {'host', 'content-length', 'connection', 'keep-alive', 'transfer-encoding',
+                    'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate',
+                    'x-api-key', 'x-tenant-id', 'x-application-id'}
+        excluded.update(h.strip().lower() for h in request.headers.get('Connection', '').split(','))
+        headers = {k: v for k, v in request.headers.items()
+                   if k.lower().replace('_', '-') not in excluded and not k.lower().replace('_', '-').startswith('x-gatescale-')}
+        headers['X-GateScale-Application-ID'] = str(request.application.id)
         try:
             with httpx.Client(timeout=10.0, follow_redirects=False, trust_env=False) as client:
                 response = client.request(
@@ -139,7 +149,7 @@ class ProductResponseCache:
 
     def __init__(self, redis_url=None):
         self.redis_url = redis_url or settings.REDIS_URL
-        self.client = redis.Redis.from_url(self.redis_url, decode_responses=True)
+        self.client = redis.Redis.from_url(self.redis_url, decode_responses=True, socket_connect_timeout=0.5, socket_timeout=0.5)
 
     def _memory_get(self, key):
         with self._lock:

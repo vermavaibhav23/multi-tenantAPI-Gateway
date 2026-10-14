@@ -8,7 +8,7 @@ from users.models import Project, User
 @override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=['http://fashion-product-service:8000'])
 class RouteCreationRegressionTests(APITestCase):
     def setUp(self):
-        owner = User.objects.create_user(username='owner', email='owner@example.com')
+        owner = User.objects.create_user(username='owner', is_staff=True, email='owner@example.com')
         self.project = Project.objects.create(owner=owner, name='Project', slug='project')
         self.client.force_authenticate(owner)
 

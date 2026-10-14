@@ -8,7 +8,7 @@ from users.models import Project, User
 
 class APIKeyValidationTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='owner', email='owner@example.com', password='password123')
+        self.user = User.objects.create_user(username='owner', is_staff=True, email='owner@example.com', password='password123')
         self.project = Project.objects.create(owner=self.user, name='Alpha', slug='alpha')
 
     def test_valid_key(self):
@@ -28,7 +28,7 @@ class APIKeyValidationTests(TestCase):
 
 class ApplicationCreateTests(APITestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='owner', email='owner@example.com', password='password123')
+        self.user = User.objects.create_user(username='owner', is_staff=True, email='owner@example.com', password='password123')
         self.project = Project.objects.create(owner=self.user, name='Fashion', slug='fashion')
         self.client.force_authenticate(user=self.user)
 

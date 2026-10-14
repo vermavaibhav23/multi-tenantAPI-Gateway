@@ -129,8 +129,16 @@ CACHES = {
 _DEFAULT_BACKEND_ORIGINS = ','.join(f'http://{name}:8000' for name in (
     'fashion-user-service', 'fashion-product-service', 'fashion-order-service',
     'banking-user-service', 'banking-account-service', 'banking-payment-service',
+    'healthcare-doctor-service', 'healthcare-appointment-service', 'healthcare-patient-service',
+    'banking-transaction-service',
 ))
 GATEWAY_ALLOWED_BACKEND_ORIGINS = [
     value.strip() for value in os.getenv('GATEWAY_ALLOWED_BACKEND_ORIGINS', _DEFAULT_BACKEND_ORIGINS).split(',')
     if value.strip()
+]
+
+# Cache only explicitly approved non-sensitive demo backends. JWT routes always bypass.
+GATEWAY_CACHEABLE_BACKEND_HOSTS = [
+    host.strip() for host in os.getenv('GATEWAY_CACHEABLE_BACKEND_HOSTS',
+        'fashion-user-service,fashion-product-service,fashion-order-service').split(',') if host.strip()
 ]

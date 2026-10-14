@@ -103,7 +103,9 @@ class GatewayRegressionTests(APITestCase):
         with patch('gateway.services.httpx.Client') as client:
             client.return_value.__enter__.return_value.request.return_value = httpx.Response(
                 302, headers={'location': 'http://169.254.169.254/'})
-            response = GatewayRequestProxy.proxy(RequestFactory().get('/echo'), self.route.target_url)
+            request = RequestFactory().get('/echo')
+            request.application = self.app
+            response = GatewayRequestProxy.proxy(request, self.route.target_url)
             self.assertEqual(response.status_code, 302)
             self.assertFalse(client.call_args.kwargs['follow_redirects'])
             self.assertFalse(client.call_args.kwargs['trust_env'])
