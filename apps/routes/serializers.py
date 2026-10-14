@@ -5,6 +5,8 @@ from .destinations import validate_target_url
 
 
 class BackendServiceSerializer(serializers.ModelSerializer):
+    slug = serializers.SlugField(max_length=120, required=False, allow_blank=True)
+
     class Meta:
         model = BackendService
         fields = ('id', 'project', 'name', 'slug', 'description', 'is_active', 'created_at')

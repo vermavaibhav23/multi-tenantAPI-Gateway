@@ -8,7 +8,7 @@ from users.models import Project
 
 class AnalyticsTests(APITestCase):
     def setUp(self):
-        self.user = get_user_model().objects.create_user(username='analytics-owner', email='analytics@example.com', password='password123')
+        self.user = get_user_model().objects.create_user(username='analytics-owner', is_staff=True, email='analytics@example.com', password='password123')
         self.project = Project.objects.create(owner=self.user, name='Stats', slug='stats')
         self.api_key, self.raw_key = APIKey.create_for_project(self.project, 'analytics-key')
 

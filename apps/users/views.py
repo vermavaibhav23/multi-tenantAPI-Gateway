@@ -1,4 +1,6 @@
 from django.contrib.auth import get_user_model
+from django.db import transaction
+from rest_framework.exceptions import ValidationError
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -11,7 +13,7 @@ User = get_user_model()
 
 
 class RegisterView(APIView):
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.IsAdminUser]
 
     def post(self, request):
         serializer = UserRegisterSerializer(data=request.data)
@@ -22,7 +24,7 @@ class RegisterView(APIView):
 
 class ProjectListCreateView(generics.ListCreateAPIView):
     serializer_class = ProjectSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAdminUser]
 
     def get_queryset(self):
         return Project.objects.filter(owner=self.request.user).order_by('-created_at')
@@ -33,16 +35,24 @@ class ProjectListCreateView(generics.ListCreateAPIView):
 
 class ApplicationListCreateView(generics.ListCreateAPIView):
     serializer_class = ApplicationSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAdminUser]
 
     def get_queryset(self):
         return Application.objects.filter(project__owner=self.request.user).order_by('-created_at')
 
     def _get_project_for_create(self):
         project_id = self.request.data.get('project')
+        if project_id is not None:
+            try:
+                project_id = int(project_id)
+            except (TypeError, ValueError):
+                raise ValidationError({'project': 'A numeric project ID is required.'})
+            if project_id <= 0:
+                raise ValidationError({'project': 'A positive project ID is required.'})
         project = self.request.user.projects.filter(id=project_id).first() if project_id else self.request.user.projects.first()
         return project
 
+    @transaction.atomic
     def create(self, request, *args, **kwargs):
         project = self._get_project_for_create()
         if not project:
@@ -64,7 +74,7 @@ class ApplicationListCreateView(generics.ListCreateAPIView):
 
 
 class APIKeyCreateView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAdminUser]
 
     def post(self, request):
         application_id = request.data.get('application')
@@ -85,7 +95,7 @@ class APIKeyCreateView(APIView):
 
 
 class APIKeyRevokeView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAdminUser]
 
     def post(self, request, key_id):
         api_key = APIKey.objects.filter(id=key_id, application__project__owner=request.user).first()
@@ -97,7 +107,7 @@ class APIKeyRevokeView(APIView):
 
 
 class DashboardView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
         projects = Project.objects.filter(owner=request.user)

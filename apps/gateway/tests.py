@@ -18,7 +18,7 @@ from gateway.services import ProductResponseCache, RedisRateLimiter
 class GatewayRoutingTests(APITestCase):
     def setUp(self):
         self.allowed_origins = ['http://127.0.0.1:9002', 'http://127.0.0.1:1']
-        origins = override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=self.allowed_origins)
+        origins = override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=self.allowed_origins, GATEWAY_CACHEABLE_BACKEND_HOSTS=['127.0.0.1'])
         origins.enable()
         self.addCleanup(origins.disable)
         offline = patch('redis.Redis.execute_command', side_effect=redis.ConnectionError('test offline'))
