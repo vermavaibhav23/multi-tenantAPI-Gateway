@@ -1,10 +1,29 @@
-# GateScale — Multi-Tenant Backend-as-a-Service Platform Prototype
+# ServLink — Multi-Tenant Backend-as-a-Service (BaaS) Platform
 
-Small businesses and startups often have limited engineering resources, making it expensive and repetitive to develop common backend functionalities independently. GateScale explores a shared Backend-as-a-Service architecture where businesses can consume reusable, industry-specific backend services through centralized infrastructure.
+**A shared backend services platform powered by a multi-tenant API Gateway.**
 
-The API Gateway is the central component of this unified platform. It authenticates business API keys, resolves project routes, enforces application plans and permissions, forwards requests to shared backends, and records analytics.
+Small businesses often have limited development teams and budgets. ServLink explores a way for multiple businesses to access reusable, industry-specific backend services through one central platform, rather than each business building the same infrastructure from scratch.
 
-**This is an architectural prototype.** Every backend is the same lightweight Python request echo. There are no product databases, patient records, scheduling, payment processing, transactions, or other business CRUD operations. The example paths test routing only.
+At the heart of ServLink is a **Django REST Framework API Gateway**. It identifies each business through an API key, routes requests to services in its industry project, enforces permissions and subscription-plan rate limits, applies safe response caching, and records request analytics.
+
+### What the platform demonstrates
+
+| Area | Implementation |
+|---|---|
+| **Shared service bundles** | E-commerce, Healthcare and Banking projects, each grouping three demo backend services |
+| **Multi-tenancy** | Multiple business applications share a project's services while retaining distinct API keys, rate limits and analytics |
+| **Gateway functionality** | API-key authentication, optional JWT policies, dynamic routing, route permissions and request forwarding |
+| **Performance** | Redis Lua-based token-bucket rate limiting and 60-second caching of eligible GET responses |
+| **Scalability** | NGINX round-robin load balancing across three Dockerized Django gateway instances |
+| **Persistent data** | MySQL for projects, applications, service/route configuration and request logs |
+
+**Technology stack:** Python, Django REST Framework, MySQL, Redis, NGINX, Docker / Docker Compose, HTTPX, JWT.
+
+**Important scope note:** ServLink is an **architectural demonstration**, not a production-ready BaaS product. Its Dockerized backend microservices are lightweight request-echo services that confirm the service name, application ID, HTTP method and path. They do **not** implement real CRUD, product inventories, patient records, scheduling, or payments. This keeps the project focused on the API Gateway, shared infrastructure, routing and tenant isolation.
+
+### Example use case
+
+Hospital A and Clinic B are separate **Applications** under the **Healthcare Project**. Each has its own API key and plan, but both call `GET /gateway/doctors` and reach the **same running Doctor Service** container. The gateway identifies the correct business, enforces its limits and forwards the request. The dummy service simply echoes which backend received it.
 
 ## Data model and tenant boundary
 
@@ -12,7 +31,7 @@ The existing tables and foreign keys are unchanged; this enhancement adds no mig
 
 | Entity | Meaning |
 |---|---|
-| User | GateScale administrator (`is_staff=True`); owner of platform configuration |
+| User | ServLink administrator (`is_staff=True`); owner of platform configuration |
 | Project | Industry bundle of reusable backend services |
 | Application | Subscribing business belonging to exactly one project |
 | APIKey | Hashed credential identifying one application; multiple keys share its plan limit |
@@ -232,8 +251,8 @@ GATESCALE_TEST_REDIS_URL=redis://127.0.0.1:6379/15 python manage.py test gateway
 
 Without this variable the shared-Redis test is explicitly skipped. Unit tests simulate Redis failures to exercise the existing fallback; those tests alone do not prove multi-process Redis behavior.
 
-## Prototype boundaries and interview introduction
+## Limitations and interview introduction
 
-No new tables, migrations, frontend, billing, subscription marketplace, Kubernetes, Kafka or Celery are introduced. Shared services demonstrate routing and tenant identification, not real BaaS functionality. The Docker setup still uses development credentials and Django runserver; production work would require secrets management, hardened deployment, private networking, trusted backend authentication, appropriate customer identity, durable observability and an explicit Redis outage policy. Cache invalidation is broad and does not provide transactional consistency with future business databases.
+No new tables, migrations, frontend, billing, subscription marketplace, Kubernetes, Kafka or Celery are introduced. Existing internal `X-GateScale-*` header names and `GATESCALE_*` environment-variable names are retained for compatibility; they are technical identifiers, not the new product name. Shared services demonstrate routing and tenant identification, not real BaaS functionality. The Docker setup still uses development credentials and Django runserver; production work would require secrets management, hardened deployment, private networking, trusted backend authentication, appropriate customer identity, durable observability and an explicit Redis outage policy. Cache invalidation is broad and does not provide transactional consistency with future business databases.
 
-> I built GateScale, a multi-tenant BaaS architecture prototype centered on a Django API Gateway. Businesses subscribe as applications to industry service bundles and share stateless dummy backends. The gateway verifies business API keys, enforces project and route permissions, applies application-level Redis token buckets, isolates cached responses, and records MySQL analytics. NGINX balances requests across three gateway instances sharing Redis and MySQL. The dummy services deliberately avoid business logic so the project focuses on routing, tenant isolation and distributed gateway behavior.
+> I built **ServLink**, a multi-tenant Backend-as-a-Service platform centered on a Django API Gateway. I grouped shared demo backend services into E-commerce, Healthcare and Banking projects, with multiple businesses represented as applications under each project. The gateway validates API keys, enforces route permissions and application-level Redis rate limits, handles eligible caching, and records analytics in MySQL. NGINX balances traffic across three gateway instances. The backend services are deliberately lightweight request-echo implementations, so the engineering focus is on multi-tenant routing, shared infrastructure and scaling.
