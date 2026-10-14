@@ -5,6 +5,7 @@ x-gateway-env: &gateway-env
   MYSQL_USER: gateway
   MYSQL_PASSWORD: gateway
   REDIS_URL: redis://redis:6379/0
+  GATEWAY_ALLOWED_BACKEND_ORIGINS: "${GATEWAY_ALLOWED_BACKEND_ORIGINS-http://fashion-user-service:8000,http://fashion-product-service:8000,http://fashion-order-service:8000,http://banking-user-service:8000,http://banking-account-service:8000,http://banking-payment-service:8000}"
 
 x-gateway-base: &gateway-base
   build: .

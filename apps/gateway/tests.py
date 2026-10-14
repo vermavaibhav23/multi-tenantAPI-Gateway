@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.test import override_settings
+import redis
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -15,6 +17,13 @@ from gateway.services import ProductResponseCache, RedisRateLimiter
 
 class GatewayRoutingTests(APITestCase):
     def setUp(self):
+        self.allowed_origins = ['http://127.0.0.1:9002', 'http://127.0.0.1:1']
+        origins = override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=self.allowed_origins)
+        origins.enable()
+        self.addCleanup(origins.disable)
+        offline = patch('redis.Redis.execute_command', side_effect=redis.ConnectionError('test offline'))
+        offline.start()
+        self.addCleanup(offline.stop)
         self.user = get_user_model().objects.create_user(
             username='gateway-owner',
             email='gateway@example.com',
@@ -45,6 +54,7 @@ class GatewayRoutingTests(APITestCase):
                 pass
 
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.allowed_origins.append(f'http://127.0.0.1:{server.server_address[1]}')
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         return server, thread

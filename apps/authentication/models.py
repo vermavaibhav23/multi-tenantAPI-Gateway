@@ -106,10 +106,12 @@ class Application(models.Model):
         ]
 
     def has_permission(self, route):
-        permissions = self.permissions.filter(is_active=True)
+        if route.project_id != self.project_id or not self.is_active:
+            return False
+        permissions = self.permissions.all()
         if not permissions.exists():
             return True
-        return permissions.filter(route=route).exists()
+        return permissions.filter(route=route, is_active=True).exists()
 
     def resolved_rate_limit(self):
         return self.PLAN_LIMITS.get(self.plan, self.PLAN_LIMITS[self.PLAN_NORMAL])

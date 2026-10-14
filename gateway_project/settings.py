@@ -124,3 +124,13 @@ CACHES = {
         'LOCATION': 'gateway-local-cache',
     }
 }
+
+# Exact origins controlled by the operator, never by project/API callers.
+_DEFAULT_BACKEND_ORIGINS = ','.join(f'http://{name}:8000' for name in (
+    'fashion-user-service', 'fashion-product-service', 'fashion-order-service',
+    'banking-user-service', 'banking-account-service', 'banking-payment-service',
+))
+GATEWAY_ALLOWED_BACKEND_ORIGINS = [
+    value.strip() for value in os.getenv('GATEWAY_ALLOWED_BACKEND_ORIGINS', _DEFAULT_BACKEND_ORIGINS).split(',')
+    if value.strip()
+]

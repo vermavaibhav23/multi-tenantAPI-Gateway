@@ -330,7 +330,7 @@ redis             Redis shared by all gateway instances
 ## Testing
 
 ```bash
-python manage.py test authentication users gateway analytics
+python manage.py test authentication users routes gateway analytics
 ```
 
 The test suite covers:
@@ -350,3 +350,50 @@ Summary:
 ```text
 I built an e-commerce API Gateway that acts as a single entry point between customer applications and backend microservices. It performs authentication, rate limiting, dynamic routing, caching, load balancing, and request analytics.
 ```
+
+## Gateway bug fixes and backend destination configuration
+
+Backend destinations must now match an operator-approved HTTP(S) origin (scheme,
+hostname, and port). This is checked both when creating routes and before serving a
+cached response or forwarding a request, so existing database routes cannot bypass
+it. The six dummy backend origins already included in Docker Compose are approved
+by default. Single-label Docker hostnames are supported.
+
+For custom backends, set `GATEWAY_ALLOWED_BACKEND_ORIGINS` to a comma-separated list,
+for example:
+
+```text
+GATEWAY_ALLOWED_BACKEND_ORIGINS=http://fashion-product-service:8000,http://127.0.0.1:9002
+```
+
+This replaces the default list; an empty list denies all configured destinations.
+For local Python execution, export the variable in your shell (Django does not load
+`.env` automatically). Docker Compose reads it from the shell or `.env` and passes
+it to every gateway instance. Restart gateway processes after changing it.
+Existing custom routes need their origins added before deployment. There are no
+wildcard approvals. Approve only operator-controlled hosts and DNS records; an
+approved hostname is a trusted destination, including its DNS resolution. Use
+network egress rules as an additional deployment boundary. Redirects are not
+followed, and environment proxy settings are ignored by the backend HTTP client.
+
+Route configuration is read from the database on every request so disabling,
+deleting, or changing authentication policy takes effect on the next request in
+all workers. Applications with no permission records retain their legacy default
+access within their project. Once permission records exist, only explicitly active
+permissions grant access; disabling the last permission denies access.
+
+Response cache keys now include both project and application IDs, with a new `v2`
+namespace. Mutating requests invalidate that project's application caches without
+invalidating another project's entries. Old cache entries expire naturally after
+60 seconds and are no longer read. There are no schema migrations for these fixes.
+
+Creating a route with `backend_service_name` and `backend_service_slug` now saves
+only model fields, with service/route creation in a transaction. Redis script
+errors use the existing in-memory rate-limit fallback instead of raising HTTP 500.
+That fallback remains process-local; Redis is required for shared limits across
+multiple gateway workers.
+
+Regression tests cover permission revocation, current route state, project cache
+invalidation, destination restrictions, Docker URLs, named service creation, and
+Redis script errors. Existing forwarding tests still use real local HTTP servers;
+their origins are explicitly approved only inside the tests.

@@ -1,6 +1,8 @@
 import time
 
 from django.http import HttpResponse, JsonResponse
+from django.core.exceptions import ValidationError
+from routes.destinations import validate_target_url
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework.views import APIView
@@ -61,13 +63,17 @@ class GatewayProxyView(APIView):
 
         cache_client = ProductResponseCache()
         target_url = GatewayRequestProxy.build_target_url(route, route_path)
+        try:
+            validate_target_url(target_url)
+        except ValidationError:
+            return JsonResponse({'detail': 'Backend destination is not allowed.'}, status=403)
         cache_key = None
-        project_cache_prefix = f'gateway_cache:{project.id}:'
+        project_cache_prefix = f'gateway_cache:v2:{project.id}:'
         if request.method == 'GET':
             customer_id = request.user.id if getattr(request, 'user', None) and request.user.is_authenticated else 'anonymous'
             query_string = request.META.get('QUERY_STRING', '')
             cache_target_url = f'{target_url}?{query_string}' if query_string else target_url
-            cache_key = f'gateway_cache:{application.id}:{customer_id}:{request.method}:{cache_target_url}'
+            cache_key = f'{project_cache_prefix}{application.id}:{customer_id}:{request.method}:{cache_target_url}'
             cached = cache_client.get(cache_key)
             if cached is not None:
                 GatewayLogger.log_request(project, request.api_key, route, route.path, request, 200, 0.0)

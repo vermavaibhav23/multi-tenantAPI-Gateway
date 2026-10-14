@@ -4,7 +4,7 @@ import time
 import httpx
 import redis
 from django.conf import settings
-from django.core.cache import cache
+from routes.destinations import validate_target_url
 from django.utils import timezone
 
 from analytics.models import RequestLog
@@ -64,11 +64,10 @@ return allowed
 
     def allow_request(self, key, limit, window_seconds):
         try:
-            self.client.ping()
-        except Exception:
+            allowed = self.client.eval(self._TOKEN_BUCKET_SCRIPT, 1, key, limit, window_seconds, time.time())
+            return int(allowed) == 1
+        except redis.RedisError:
             return self._fallback_allow_request(key, limit, window_seconds)
-        allowed = self.client.eval(self._TOKEN_BUCKET_SCRIPT, 1, key, limit, window_seconds, time.time())
-        return int(allowed) == 1
 
 
 class RouteResolver:
@@ -79,15 +78,11 @@ class RouteResolver:
     @staticmethod
     def get_route_for_request(project, method, path):
         normalized = RouteResolver.normalize_path(path)
-        cache_key = f'route:{project.id}:{method}:{normalized}'
-        route = cache.get(cache_key)
-        if route is not None:
-            return route
+        # Read current configuration on every request, across all gateway workers.
         routes = Route.objects.filter(project=project, method=method, is_active=True).order_by('-path')
         for route in routes:
             route_path = RouteResolver.normalize_path(route.path)
             if route_path == normalized or normalized.startswith(f'{route_path}/'):
-                cache.set(cache_key, route, timeout=300)
                 return route
         return None
 
@@ -102,9 +97,10 @@ class GatewayRequestProxy:
 
     @staticmethod
     def proxy(request, target_url):
+        validate_target_url(target_url)
         headers = {k: v for k, v in request.headers.items() if k.lower() not in {'host', 'content-length', 'connection'}}
         try:
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=10.0, follow_redirects=False, trust_env=False) as client:
                 response = client.request(
                     method=request.method,
                     url=target_url,

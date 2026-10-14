@@ -1,4 +1,5 @@
 from django.utils.text import slugify
+from django.db import transaction
 from rest_framework import generics, permissions
 
 from .models import BackendService, Route
@@ -12,6 +13,7 @@ class BackendServiceListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         return BackendService.objects.filter(project__owner=self.request.user).order_by('-created_at')
 
+    @transaction.atomic
     def perform_create(self, serializer):
         project_id = self.request.data.get('project')
         project = self.request.user.projects.filter(id=project_id).first() if project_id else self.request.user.projects.first()
@@ -49,6 +51,7 @@ class RouteListCreateView(generics.ListCreateAPIView):
         )
         return service
 
+    @transaction.atomic
     def perform_create(self, serializer):
         project = self._get_project()
         if not project:
