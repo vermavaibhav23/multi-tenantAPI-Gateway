@@ -2,7 +2,7 @@
 
 ServLink is a Django REST Framework gateway that lets business applications share domain-specific demo microservices (Healthcare, Banking, E-commerce). It uses API keys to identify applications, Redis token-bucket rate limiting, optional JWT verification on configured HTTP methods, safe GET caching, request analytics, and NGINX across three gateway replicas.
 
-**Scope:** The Docker backend services are intentionally dummy request-echo servers. They do not implement real patients, bookings, payments or a client-user identity provider.
+**Scope:** The domain backend containers remain dummy request-echo services. ServLink now includes a shared, application-isolated **client-user authentication component** in the Django gateway deployment. It authenticates application users and issues scoped-to-application JWTs; it does not yet provide roles/RBAC, actual patients/bookings/payments, or a separately deployed AuthService container.
 
 ## Data model (routing schema)
 
@@ -15,21 +15,21 @@ ServLink is a Django REST Framework gateway that lets business applications shar
 | Route | id, project, backend_service, base_path, target_url, is_active | `(project, base_path)` |
 | RouteMethod | id, route, method, auth_policy | `(route, method)` |
 | RoutePermission | id, application, route, is_active | `(application, route)` |
-| RequestLog | project, application, route, method, status, latency, etc. | analytics/history |
+| ApplicationUser | id, application, email, password_hash, is_active, token_version | `(application, email)` |\n| RequestLog | project, application, route, client_user, method, status, latency, etc. | analytics/history |
 
 `BackendService → Route` is 1:N: one DoctorService can expose `/doctors` and `/specialties`, each with its own Route and backend URL. `Route → RouteMethod` is 1:N: one `/doctors` Route can expose GET (API key only) and DELETE (API key plus JWT) with independent policies. All routes in the same project must have distinct public base paths.
 
 Existing `slug`, timestamp, description and key revocation fields are retained for compatibility even where omitted from the compact ER diagram. `Application → APIKey` is one-to-one: issuing a replacement key rotates the stored hash, invalidating the previous value.
 
-**Important distinction:** RoutePermission grants application-level access to a whole route, not a user-level role. No matching RoutePermission rows means the application can access its project's routes by default; once any permissions exist for that application, only active grants allow access. RouteMethod controls HTTP method availability and basic JWT verification. Tenant-scoped client-user JWTs and RBAC are future enhancements.
+**Important distinction:** RoutePermission grants application-level access to a whole route, not a user-level role. No matching RoutePermission rows means the application can access its project's routes by default; once any permissions exist for that application, only active grants allow access. RouteMethod controls HTTP method availability and basic JWT verification. Application-bound client-user JWTs are now implemented; role-based authorization (RBAC) and resource ownership checks are future enhancements.
 
 ## Gateway request flow
 
 1. The `X-API-Key` is hashed and looked up in APIKey, identifying the Application and its Project. No caller-provided project/tenant ID is trusted for routing.
 2. Match the most specific, full-segment `Route.base_path` in that project. `/doctors` matches `/doctors/456` but not `/doctors-extra`.
-3. Look up `RouteMethod(route, request.method)`. If absent, return 405 without trying another prefix. If its `auth_policy` is `api_key_and_jwt`, verify a bearer token.
+3. Look up `RouteMethod(route, request.method)`. If absent, return 405 without trying another prefix. If its `auth_policy` is `api_key_and_jwt`, verify a **client-user** bearer token signed by the shared client authentication component, and require the JWT application identity to match the validated API key. ServLink staff JWTs are not accepted for client routes.
 4. Apply RoutePermission (if present), per-Application Redis token-bucket rate limit, safe GET cache rules and backend destination-origin allowlist.
-5. Forward the request's original HTTP method, body and query string to `Route.target_url + unmatched path suffix`. Remove caller-supplied identity headers and attach verified `X-GateScale-Application-ID`.
+5. Forward the request's original HTTP method, body and query string to `Route.target_url + unmatched path suffix`. Strip the raw API key, bearer token and spoofable identity headers; attach verified `X-GateScale-Application-ID` and (when authenticated) `X-GateScale-Client-User-ID`. Downstream services must be protected from direct untrusted network access.
 6. Return the downstream status/body and record RequestLog analytics.
 
 Example: `GET /gateway/doctors/456` with Hospital A's API key and a Route mapping `/doctors` to `http://healthcare-doctor-service:8000/doctors` is sent to `http://healthcare-doctor-service:8000/doctors/456`.
@@ -47,7 +47,7 @@ Admin APIs use a valid ServLink staff JWT, obtained from `POST /admin-api/auth/l
 | `GET/POST /admin-api/services` | List or register BackendServices |
 | `GET/POST /admin-api/routes` | List or create project base-path Route mappings |
 | `GET/POST /admin-api/route-methods` | List or create HTTP method + JWT policy per Route |
-| `GET/POST /admin-api/applications` | List or register business applications (creates first API key) |
+| `GET/POST /admin-api/applications` | List or register business applications (creates first API key) |\n| `GET/POST /admin-api/application-users` | Staff lists or creates end-user accounts for owned applications |\n| `POST /admin-api/application-users/<id>/disable` | Staff disables an application user and immediately invalidates their tokens |
 | `POST /admin-api/keys` | Rotate application's only API key, returning the new secret once |
 | `POST /admin-api/keys/<id>/revoke` | Revoke application API key |
 | `GET /admin-api/dashboard` | Owner-scoped project summary |
@@ -117,11 +117,75 @@ The APIKey migration intentionally fails if more than one key exists for an appl
 
 These data transformations are not designed to be automatically reversed. Do not deploy an older gateway binary against the new schema.
 
-## Authentication and future enhancements
+## Client-application user JWT authentication (implemented)
 
-Staff JWTs are issued using Django SimpleJWT for ServLink's platform `User` accounts. The current `api_key_and_jwt` policy verifies those platform-issued tokens; it **does not authenticate or authorize Hospital A's doctors or patients**. For real end-user operations, a future shared AuthService would issue application-bound customer JWTs and the gateway would compare the client JWT's tenant/application context and required scopes. Resource ownership checks would remain inside business microservices. Do not expose real sensitive operations relying on the current platform JWT check alone.
+ServLink platform `User` is **only** the Django administrator/staff identity. Each subscribing business has `ApplicationUser` records with `application_id`, a normalized email, and a password stored using Django's salted password hashing. `UNIQUE(application_id, email)` ensures isolation: Hospital A and Clinic B can have users with the same email without sharing credentials.
 
-Current token-bucket limits: normal 100 and premium 1,000 requests per 60 seconds (continuous refill). Redis failures use a per-process fallback, which is not globally consistent. GET response caching is permitted only for explicitly approved non-sensitive backend hosts and cacheable responses. Analytics remain MySQL-backed.
+**Implementation boundary:** `client_auth` is one shared Django authentication module deployed with each gateway replica, using shared MySQL. It is not yet a separate Dockerized AuthService container. This demonstrates tenant-bound JWT issuance without spinning up an authentication container per business; a dedicated service is a future extraction if needed.
+
+### 1. Staff provisions the application's users
+
+```http
+POST /admin-api/application-users
+Authorization: Bearer <servlink_staff_access_jwt>
+Content-Type: application/json
+
+{"application":101,"email":"doctor@hospital-a.example","password":"<strong unique password>"}
+```
+
+The endpoint is staff-only and restricts creation to projects the logged-in administrator owns. It returns the user's ID, application ID, email and status **without** disclosing the password/hash. `GET /admin-api/application-users` lists owned application users. To deactivate a user:
+
+```http
+POST /admin-api/application-users/42/disable
+Authorization: Bearer <servlink_staff_access_jwt>
+```
+
+Disabling a user causes access and refresh tokens to be rejected immediately.
+
+### 2. Hospital A's backend logs in a user (API key required, no user JWT)
+
+```http
+POST /gateway/auth/login
+X-API-Key: <hospital-a-server-api-key>
+Content-Type: application/json
+
+{"email":"doctor@hospital-a.example","password":"<correct password>"}
+```
+
+Response:
+
+```json
+{"access":"<client_access_jwt>","refresh":"<client_refresh_jwt>","token_type":"Bearer","expires_in":900}
+```
+
+The API key identifies the Application; user lookup is constrained to that application. No application ID provided by the caller is trusted as identity. Failed logins return a generic 401; repeated attempts are rate-limited by application/email using Redis (per-process fallback during outage).
+
+### 3. Refresh user access
+
+```http
+POST /gateway/auth/refresh
+X-API-Key: <hospital-a-server-api-key>
+Content-Type: application/json
+
+{"refresh":"<client_refresh_jwt>"}
+```
+
+Returns a new access token; the provided refresh token remains valid until expiration or user deactivation. A refresh token cannot be used as an access token.
+
+### 4. Call a JWT-protected backend route
+
+```http
+GET /gateway/doctors/456
+X-API-Key: <hospital-a-server-api-key>
+Authorization: Bearer <client_access_jwt>
+```
+
+The gateway validates signature (HS256 with independent `CLIENT_JWT_SIGNING_KEY`), expiry, token type, expected issuer `servlink-client-auth`, audience `servlink-gateway`, the JWT's `application_id` matching the API key, and the user still being active. Token lifetime: **15-minute access**, **7-day refresh**. Server-side secrets must not be embedded in a browser frontend; the application's trusted backend holds the API key and can relay the user's token.
+
+The platform staff JWT uses a **different signing domain** and **cannot** authenticate JWT-protected client routes. The gateway strips incoming bearer/API-key credentials before forwarding and injects verified identity headers for the isolated dummy services. RequestLog optionally records `client_user_id`.
+
+**Security / limitations:** The shared module is an implementation of basic authentication, not an independently hosted or fully hardened identity provider. RBAC, JWT role/scope enforcement, business resource ownership, self-service enrollment, password recovery and refresh-token rotation/revocation are future enhancements. In particular, a valid client JWT proves who a user is, **not** that they are allowed to DELETE a doctor. Never expose real sensitive operations until authorization is implemented in the microservice or at the gateway. Use a strong independently generated `CLIENT_JWT_SIGNING_KEY` on **all** gateway replicas, enable TLS, and protect the private service network. Django's development signing-key fallback is not suitable for production.
+
 
 ## Validation
 
