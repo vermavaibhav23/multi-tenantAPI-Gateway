@@ -102,6 +102,27 @@ class GatewayRoutingTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(seen, [('GET', '/doctors/456?active=yes')])
 
+    def test_two_public_routes_share_one_service_origin(self):
+        self.route(path='/doctors', url='http://127.0.0.1:9002/doctors')
+        self.route(path='/specialties', url='http://127.0.0.1:9002/specialties')
+        self.assertEqual(Route.objects.count(), 2)
+        self.assertEqual(
+            Route.objects.values_list('backend_service_id', flat=True).distinct().count(), 1
+        )
+        with patch('gateway.views.GatewayRequestProxy.proxy',
+                   return_value=httpx.Response(200, json={'ok': True})) as proxy:
+            self.assertEqual(
+                self.client.get('/gateway/doctors/435', **self.headers()).status_code, 200
+            )
+            self.assertEqual(
+                self.client.get('/gateway/specialties/8', **self.headers()).status_code, 200
+            )
+        self.assertEqual(
+            [call.args[1] for call in proxy.call_args_list],
+            ['http://127.0.0.1:9002/doctors/435',
+             'http://127.0.0.1:9002/specialties/8']
+        )
+
     def test_get_post_delete_share_route_with_independent_authentication(self):
         route = self.route(methods=[
             ('GET', 'api_key_only'), ('POST', 'api_key_and_jwt'),

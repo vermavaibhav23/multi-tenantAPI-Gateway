@@ -32,6 +32,27 @@ class RouteCreationTests(APITestCase):
         self.assertEqual(policy.status_code, 201, policy.data)
         return route
 
+    def test_admin_registers_service_origin_and_route_separately(self):
+        service_response = self.client.post('/admin-api/services', {
+            'project': self.project.id,
+            'name': 'Doctor Service',
+            'base_url': 'http://fashion-product-service:8000',
+        }, format='json')
+        self.assertEqual(service_response.status_code, 201, service_response.data)
+        self.assertEqual(service_response.data['base_url'],
+                         'http://fashion-product-service:8000')
+
+        route_response = self.client.post('/admin-api/routes', {
+            'project': self.project.id,
+            'name': 'Doctors',
+            'backend_service': service_response.data['id'],
+            'base_path': '/doctors',
+        }, format='json')
+        self.assertEqual(route_response.status_code, 201, route_response.data)
+        self.assertNotIn('target_url', route_response.data)
+        self.assertEqual(route_response.data['backend_service_detail']['base_url'],
+                         'http://fashion-product-service:8000')
+
     def test_route_and_method_policy_created_separately(self):
         route = self.add_route()
         self.assertEqual(route.base_path, '/products')
