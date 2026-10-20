@@ -81,12 +81,15 @@ class RouteResolver:
         normalized = RouteResolver.normalize_path(path)
         # Read current configuration on every request, across all gateway workers.
         routes = Route.objects.select_related('backend_service').filter(
-            Q(backend_service__isnull=True) | Q(backend_service__project=project, backend_service__is_active=True),
-            project=project, method=method, is_active=True,
-        ).order_by('-path')
-        for route in routes:
-            route_path = RouteResolver.normalize_path(route.path)
-            if route_path == normalized or normalized.startswith(f'{route_path}/'):
+            Q(backend_service__isnull=True)
+            | Q(backend_service__project=project, backend_service__is_active=True),
+            project=project, is_active=True,
+        )
+        # Match the longest full-segment prefix, independent of HTTP method.
+        # A disallowed method must not fall through to a shorter public prefix.
+        for route in sorted(routes, key=lambda item: len(RouteResolver.normalize_path(item.base_path)), reverse=True):
+            prefix = RouteResolver.normalize_path(route.base_path)
+            if prefix == normalized or normalized.startswith(f'{prefix}/'):
                 return route
         return None
 
@@ -94,7 +97,7 @@ class RouteResolver:
 class GatewayRequestProxy:
     @staticmethod
     def build_target_url(route, route_path):
-        normalized_route = RouteResolver.normalize_path(route.path)
+        normalized_route = RouteResolver.normalize_path(route.base_path)
         normalized_request = RouteResolver.normalize_path(route_path)
         suffix = normalized_request[len(normalized_route):] if normalized_request.startswith(normalized_route) else ''
         return route.target_url.rstrip('/') + suffix
