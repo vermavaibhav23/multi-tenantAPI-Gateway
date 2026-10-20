@@ -19,13 +19,13 @@ def migrate_routes(apps, schema_editor):
     BackendService = apps.get_model('routes', 'BackendService')
     Route = apps.get_model('routes', 'Route')
     RoutePermission = apps.get_model('authentication', 'RoutePermission')
+    RequestLog = apps.get_model('analytics', 'RequestLog')
 
     groups = defaultdict(list)
     for route in Route.objects.all().order_by('id'):
         groups[(route.project_id, route.path)].append(route)
 
     service_paths = {}
-    project_paths = {}
 
     # Validate the entire legacy configuration before changing any records.
     for (project_id, path), routes in groups.items():
@@ -50,7 +50,6 @@ def migrate_routes(apps, schema_editor):
                     'Split or redesign the service registration before migrating.'
                 )
             service_paths[service_id] = path
-        project_paths[(project_id, path)] = next(iter(service_ids)) if service_ids else None
 
     for (project_id, path), rows in groups.items():
         rows.sort(key=lambda obj: obj.id)
@@ -92,6 +91,11 @@ def migrate_routes(apps, schema_editor):
             selected.is_active = bool(granted)
             selected.save(update_fields=['route', 'allowed_methods', 'is_active'])
 
+        # Preserve analytics foreign keys before deleting duplicate method routes.
+        duplicate_ids = [item.id for item in rows[1:]]
+        if duplicate_ids:
+            RequestLog.objects.filter(route_id__in=duplicate_ids).update(route_id=current.pk)
+
         current.backend_service_id = service.id
         current.allowed_methods = enabled
         current.is_active = bool(enabled)
@@ -114,6 +118,7 @@ class Migration(migrations.Migration):
     dependencies = [
         ('routes', '0007_route_auth_policy'),
         ('authentication', '0009_routepermission_allowed_methods'),
+        ('analytics', '0004_requestlog_application_requestlog_customer_and_more'),
     ]
 
     operations = [
