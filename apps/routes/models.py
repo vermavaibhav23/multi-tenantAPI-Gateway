@@ -12,7 +12,7 @@ class BackendService(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        unique_together = [('project', 'slug')]
+        unique_together = [('project', 'slug'), ('project', 'name')]
         indexes = [
             models.Index(fields=['project', 'is_active']),
             models.Index(fields=['slug']),
@@ -28,6 +28,28 @@ class BackendService(models.Model):
 
 
 class Route(models.Model):
+    project = models.ForeignKey('users.Project', on_delete=models.CASCADE, related_name='routes')
+    backend_service = models.ForeignKey(
+        BackendService, on_delete=models.CASCADE, related_name='routes', null=True, blank=True
+    )
+    name = models.CharField(max_length=120)
+    base_path = models.CharField(max_length=200)
+    target_url = models.URLField(max_length=500, blank=True, default='')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['is_active']),
+        ]
+        unique_together = [('project', 'base_path')]
+
+    def __str__(self):
+        return self.base_path
+
+
+class RouteMethod(models.Model):
     AUTH_API_KEY_ONLY = 'api_key_only'
     AUTH_API_KEY_AND_JWT = 'api_key_and_jwt'
     AUTH_POLICY_CHOICES = [
@@ -41,25 +63,14 @@ class Route(models.Model):
         ('PATCH', 'PATCH'),
         ('DELETE', 'DELETE'),
     ]
-    project = models.ForeignKey('users.Project', on_delete=models.CASCADE, related_name='routes')
-    backend_service = models.ForeignKey(BackendService, on_delete=models.CASCADE, related_name='routes', null=True, blank=True)
-    name = models.CharField(max_length=120)
-    method = models.CharField(max_length=10, choices=METHOD_CHOICES, default='GET')
-    path = models.CharField(max_length=200)
-    target_url = models.URLField(max_length=500, blank=True, default='')
-    auth_policy = models.CharField(max_length=20, choices=AUTH_POLICY_CHOICES, default=AUTH_API_KEY_ONLY)
-    is_active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    route = models.ForeignKey(Route, on_delete=models.CASCADE, related_name='method_policies')
+    method = models.CharField(max_length=10, choices=METHOD_CHOICES)
+    auth_policy = models.CharField(
+        max_length=20, choices=AUTH_POLICY_CHOICES, default=AUTH_API_KEY_ONLY
+    )
 
     class Meta:
-        indexes = [
-            models.Index(fields=['project', 'method', 'path']),
-            models.Index(fields=['backend_service', 'method']),
-            models.Index(fields=['method', 'path']),
-            models.Index(fields=['is_active']),
-        ]
-        unique_together = [('project', 'method', 'path')]
+        unique_together = [('route', 'method')]
 
     def __str__(self):
-        return f'{self.method} {self.path}'
+        return f'{self.method} {self.route.base_path} ({self.auth_policy})'
