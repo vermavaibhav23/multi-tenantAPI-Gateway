@@ -43,13 +43,13 @@ class GatewayProxyView(APIView):
 
         def reject(detail, status_code, route=None, error_key='detail'):
             GatewayLogger.log_request(project, request.api_key, route,
-                                      route.path if route else route_path[:255], request, status_code, 0.0)
+                                      route.backend_service.base_path if route else route_path[:255], request, status_code, 0.0)
             return JsonResponse({error_key: detail}, status=status_code)
 
         route = RouteResolver.get_route_for_request(project, request.method, route_path)
         if not route:
             return reject('Route not found.', 404)
-        if not request.api_key.can_access(route):
+        if not request.api_key.can_access(route, request.method):
             return reject('Application is not allowed to access this route.', 403, route)
         if route.auth_policy == Route.AUTH_API_KEY_AND_JWT:
             try:
@@ -88,12 +88,12 @@ class GatewayProxyView(APIView):
             cache_key = f'{project_cache_prefix}{application.id}:{customer_id}:{request.method}:{cache_target_url}'
             cached = cache_client.get(cache_key)
             if cached is not None:
-                GatewayLogger.log_request(project, request.api_key, route, route.path, request, 200, 0.0)
+                GatewayLogger.log_request(project, request.api_key, route, route.backend_service.base_path, request, 200, 0.0)
                 return HttpResponse(cached, status=200, content_type='application/json')
         elif request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
             cache_client.invalidate_prefix(project_cache_prefix)
 
-        if not route.target_url:
+        if not route.backend_service.target_url:
             return reject('No healthy backends for this route.', 503, route)
 
         started = time.time()
@@ -101,11 +101,11 @@ class GatewayProxyView(APIView):
         elapsed_ms = (time.time() - started) * 1000
 
         if response is None:
-            GatewayLogger.log_request(project, request.api_key, route, route.path, request, 503, elapsed_ms)
+            GatewayLogger.log_request(project, request.api_key, route, route.backend_service.base_path, request, 503, elapsed_ms)
             return JsonResponse({'detail': 'Backend unavailable.'}, status=503)
 
         content_type = response.headers.get('content-type', 'application/json')
-        GatewayLogger.log_request(project, request.api_key, route, route.path, request, response.status_code, elapsed_ms)
+        GatewayLogger.log_request(project, request.api_key, route, route.backend_service.base_path, request, response.status_code, elapsed_ms)
         cache_control = response.headers.get('cache-control', '').lower()
         if (cache_key and response.status_code == 200 and 'application/json' in content_type
                 and not response.headers.get('set-cookie') and not response.headers.get('vary')
