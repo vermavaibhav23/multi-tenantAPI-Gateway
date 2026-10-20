@@ -23,6 +23,22 @@ def _origin(value):
     return parsed.scheme, host, port if port is not None else (443 if parsed.scheme == 'https' else 80)
 
 
+def validate_backend_base_url(value):
+    """A backend service owns one approved HTTP(S) origin, never a URL path.
+
+    Disallow paths, query strings, credentials, fragments and scheme-relative
+    addresses, so forwarding can safely append the complete gateway route path.
+    """
+    if not value:
+        return value  # Unconfigured service returns 503 on gateway requests.
+    parsed = urlsplit(value)
+    if parsed.path or parsed.query or parsed.fragment or value.endswith('/'):
+        raise ValidationError(
+            'Backend base URL must contain only an approved origin without a path or query.'
+        )
+    return validate_target_url(value)
+
+
 def validate_target_url(value):
     if not value:
         return value  # Unconfigured routes retain their existing 503 behavior.

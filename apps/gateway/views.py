@@ -7,7 +7,7 @@ from django.http import HttpResponse, JsonResponse
 from client_auth.services import ClientTokenError, authenticate_client_bearer
 from rest_framework.views import APIView
 
-from routes.destinations import validate_target_url
+from routes.destinations import validate_backend_base_url, validate_target_url
 from routes.models import RouteMethod
 
 from .services import GatewayLogger, GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RouteResolver
@@ -69,14 +69,15 @@ class GatewayProxyView(APIView):
         if not RedisRateLimiter().allow_request(rate_key, limit, window_seconds):
             return reject('Rate limit exceeded', 429, route, error_key='error')
 
-        if not route.target_url:
+        if not route.backend_service or not route.backend_service.base_url:
             return reject('No healthy backends for this route.', 503, route)
-        cache_client = ProductResponseCache()
-        target_url = GatewayRequestProxy.build_target_url(route, route_path)
         try:
+            validate_backend_base_url(route.backend_service.base_url)
+            target_url = GatewayRequestProxy.build_target_url(route, route_path)
             validate_target_url(target_url)
-        except ValidationError:
+        except (ValidationError, ValueError):
             return reject('Backend destination is not allowed.', 403, route)
+        cache_client = ProductResponseCache()
         cache_key = None
         project_cache_prefix = f'gateway_cache:v2:{project.id}:'
         cache_allowed = (

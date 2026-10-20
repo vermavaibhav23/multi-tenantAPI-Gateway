@@ -4,7 +4,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from routes.demo import INDUSTRY_BUNDLES
-from routes.destinations import validate_target_url
+from routes.destinations import validate_backend_base_url
 from routes.models import BackendService, Route, RouteMethod
 from users.models import Project
 
@@ -32,21 +32,20 @@ class Command(BaseCommand):
             if project.owner_id != owner.id:
                 raise CommandError(f'Project {slug} belongs to another administrator; no data changed.')
             for service_name, host, path in services:
-                target = f'http://{host}:8000{path}'
+                base_url = f'http://{host}:8000'
                 try:
-                    validate_target_url(target)
+                    validate_backend_base_url(base_url)
                 except ValidationError as exc:
                     raise CommandError(f'Approve the demo backend origin for {host} before seeding.') from exc
                 service, _ = BackendService.objects.get_or_create(
                     project=project, slug=host,
-                    defaults={'name': service_name},
+                    defaults={'name': service_name, 'base_url': base_url},
                 )
                 route, _ = Route.objects.get_or_create(
                     project=project, base_path=path,
                     defaults={
                         'name': f'{service_name} routing test',
                         'backend_service': service,
-                        'target_url': target,
                     },
                 )
                 if route.backend_service_id != service.id:

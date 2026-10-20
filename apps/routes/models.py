@@ -7,6 +7,8 @@ class BackendService(models.Model):
     name = models.CharField(max_length=120)
     slug = models.SlugField(max_length=120, blank=True)
     description = models.TextField(blank=True, default='')
+    # Internal network origin only, e.g. http://healthcare-doctor-service:8000.
+    base_url = models.URLField(max_length=500, blank=True, default='')
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -34,7 +36,6 @@ class Route(models.Model):
     )
     name = models.CharField(max_length=120)
     base_path = models.CharField(max_length=200)
-    target_url = models.URLField(max_length=500, blank=True, default='')
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

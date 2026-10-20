@@ -99,8 +99,11 @@ class GatewayRequestProxy:
     def build_target_url(route, route_path):
         normalized_route = RouteResolver.normalize_path(route.base_path)
         normalized_request = RouteResolver.normalize_path(route_path)
-        suffix = normalized_request[len(normalized_route):] if normalized_request.startswith(normalized_route) else ''
-        return route.target_url.rstrip('/') + suffix
+        if normalized_request != normalized_route and not normalized_request.startswith(f'{normalized_route}/'):
+            raise ValueError('Request path does not match the configured public route.')
+        # route_path is already the requested path after /gateway.
+        # Public and backend paths are intentionally the same in ServLink.
+        return route.backend_service.base_url.rstrip('/') + normalized_request
 
     @staticmethod
     def proxy(request, target_url):
