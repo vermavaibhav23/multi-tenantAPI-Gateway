@@ -4,7 +4,6 @@ import time
 import httpx
 import redis
 from django.conf import settings
-from django.db.models import Q
 from django.utils import timezone
 
 from analytics.models import RequestLog
@@ -81,12 +80,14 @@ class RouteResolver:
         normalized = RouteResolver.normalize_path(path)
         # Read current configuration on every request, across all gateway workers.
         routes = Route.objects.select_related('backend_service').filter(
-            Q(backend_service__isnull=True) | Q(backend_service__project=project, backend_service__is_active=True),
-            project=project, method=method, is_active=True,
-        ).order_by('-path')
+            project=project, backend_service__project=project,
+            backend_service__is_active=True, is_active=True,
+        ).order_by('-backend_service__base_path')
         for route in routes:
-            route_path = RouteResolver.normalize_path(route.path)
-            if route_path == normalized or normalized.startswith(f'{route_path}/'):
+            base_path = route.backend_service.base_path
+            if method not in route.allowed_methods:
+                continue
+            if base_path == normalized or normalized.startswith(f'{base_path}/'):
                 return route
         return None
 
@@ -94,10 +95,12 @@ class RouteResolver:
 class GatewayRequestProxy:
     @staticmethod
     def build_target_url(route, route_path):
-        normalized_route = RouteResolver.normalize_path(route.path)
+        base_path = route.backend_service.base_path
         normalized_request = RouteResolver.normalize_path(route_path)
-        suffix = normalized_request[len(normalized_route):] if normalized_request.startswith(normalized_route) else ''
-        return route.target_url.rstrip('/') + suffix
+        if normalized_request != base_path and not normalized_request.startswith(f'{base_path}/'):
+            raise ValueError('Request path does not match service base path.')
+        suffix = normalized_request[len(base_path):]
+        return route.backend_service.target_url.rstrip('/') + suffix
 
     @staticmethod
     def proxy(request, target_url):
