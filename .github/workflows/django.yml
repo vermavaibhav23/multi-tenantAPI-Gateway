@@ -1,7 +1,7 @@
 name: Django checks
 on:
   push:
-    branches: [main, schema/route-method-policies-final, feat/application-client-jwt-auth]
+    branches: [main, schema/route-method-policies-final, feat/application-client-jwt-auth, refactor/backend-service-base-url]
   pull_request:
     branches: [main]
 jobs:

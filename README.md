@@ -11,13 +11,14 @@ ServLink is a Django REST Framework gateway that lets business applications shar
 | Project | id, owner (ServLink staff User), name, slug | `name`; `slug` |
 | Application | id, project, name, slug, plan, is_active | `(project, slug)` |
 | APIKey | id, application (1:1), key_hash, expires_at, revoked_at | `key_hash`; `application` |
-| BackendService | id, project, name, slug, is_active | `(project, name)`; `(project, slug)` |
-| Route | id, project, backend_service, base_path, target_url, is_active | `(project, base_path)` |
+| BackendService | id, project, name, slug, base_url, is_active | `(project, name)`; `(project, slug)` |
+| Route | id, project, backend_service, base_path, is_active | `(project, base_path)` |
 | RouteMethod | id, route, method, auth_policy | `(route, method)` |
 | RoutePermission | id, application, route, is_active | `(application, route)` |
-| ApplicationUser | id, application, email, password_hash, is_active, token_version | `(application, email)` |\n| RequestLog | project, application, route, client_user, method, status, latency, etc. | analytics/history |
+| ApplicationUser | id, application, email, password_hash, is_active, token_version | `(application, email)` |
+| RequestLog | project, application, route, client_user, method, status, latency, etc. | analytics/history |
 
-`BackendService → Route` is 1:N: one DoctorService can expose `/doctors` and `/specialties`, each with its own Route and backend URL. `Route → RouteMethod` is 1:N: one `/doctors` Route can expose GET (API key only) and DELETE (API key plus JWT) with independent policies. All routes in the same project must have distinct public base paths.
+`BackendService → Route` is 1:N: one DoctorService can expose `/doctors` and `/specialties`, each with its own Route while sharing the same BackendService base URL. `Route → RouteMethod` is 1:N: one `/doctors` Route can expose GET (API key only) and DELETE (API key plus JWT) with independent policies. All routes in the same project must have distinct public base paths.
 
 Existing `slug`, timestamp, description and key revocation fields are retained for compatibility even where omitted from the compact ER diagram. `Application → APIKey` is one-to-one: issuing a replacement key rotates the stored hash, invalidating the previous value.
 
@@ -29,10 +30,10 @@ Existing `slug`, timestamp, description and key revocation fields are retained f
 2. Match the most specific, full-segment `Route.base_path` in that project. `/doctors` matches `/doctors/456` but not `/doctors-extra`.
 3. Look up `RouteMethod(route, request.method)`. If absent, return 405 without trying another prefix. If its `auth_policy` is `api_key_and_jwt`, verify a **client-user** bearer token signed by the shared client authentication component, and require the JWT application identity to match the validated API key. ServLink staff JWTs are not accepted for client routes.
 4. Apply RoutePermission (if present), per-Application Redis token-bucket rate limit, safe GET cache rules and backend destination-origin allowlist.
-5. Forward the request's original HTTP method, body and query string to `Route.target_url + unmatched path suffix`. Strip the raw API key, bearer token and spoofable identity headers; attach verified `X-GateScale-Application-ID` and (when authenticated) `X-GateScale-Client-User-ID`. Downstream services must be protected from direct untrusted network access.
+5. Strip `/gateway` from the incoming path and forward the original HTTP method, body and query string to `BackendService.base_url + entire remaining request path`. Strip the raw API key, bearer token and spoofable identity headers; attach verified `X-GateScale-Application-ID` and (when authenticated) `X-GateScale-Client-User-ID`. Downstream services must be protected from direct untrusted network access.
 6. Return the downstream status/body and record RequestLog analytics.
 
-Example: `GET /gateway/doctors/456` with Hospital A's API key and a Route mapping `/doctors` to `http://healthcare-doctor-service:8000/doctors` is sent to `http://healthcare-doctor-service:8000/doctors/456`.
+Example: `GET /gateway/doctors/456` with Hospital A's API key, a Route whose `base_path=/doctors`, and DoctorService whose `base_url=http://healthcare-doctor-service:8000` is sent to `http://healthcare-doctor-service:8000/doctors/456`.
 
 ## Administrator REST endpoints
 
@@ -47,21 +48,41 @@ Admin APIs use a valid ServLink staff JWT, obtained from `POST /admin-api/auth/l
 | `GET/POST /admin-api/services` | List or register BackendServices |
 | `GET/POST /admin-api/routes` | List or create project base-path Route mappings |
 | `GET/POST /admin-api/route-methods` | List or create HTTP method + JWT policy per Route |
-| `GET/POST /admin-api/applications` | List or register business applications (creates first API key) |\n| `GET/POST /admin-api/application-users` | Staff lists or creates end-user accounts for owned applications |\n| `POST /admin-api/application-users/<id>/disable` | Staff disables an application user and immediately invalidates their tokens |
+| `GET/POST /admin-api/applications` | List or register business applications (creates first API key) |
+| `GET/POST /admin-api/application-users` | Staff lists or creates end-user accounts for owned applications |
+| `POST /admin-api/application-users/<id>/disable` | Staff disables an application user and immediately invalidates their tokens |
 | `POST /admin-api/keys` | Rotate application's only API key, returning the new secret once |
 | `POST /admin-api/keys/<id>/revoke` | Revoke application API key |
 | `GET /admin-api/dashboard` | Owner-scoped project summary |
 | `GET /admin-api/analytics/summary` | Owner-scoped request statistics (optional `application_id`) |
 
-Example creation (use IDs returned by your server):
+Register the internal microservice origin first, then one or more public routes (use actual IDs returned by your server):
+
+```http
+POST /admin-api/services
+Authorization: Bearer <staff_access_jwt>
+Content-Type: application/json
+
+{"project":10,"name":"Doctor Service","slug":"healthcare-doctor-service","base_url":"http://healthcare-doctor-service:8000"}
+```
 
 ```http
 POST /admin-api/routes
 Authorization: Bearer <staff_access_jwt>
 Content-Type: application/json
 
-{"project":10,"name":"Doctor API","backend_service":201,"base_path":"/doctors","target_url":"http://healthcare-doctor-service:8000/doctors"}
+{"project":10,"name":"Doctor API","backend_service":201,"base_path":"/doctors"}
 ```
+
+```http
+POST /admin-api/routes
+Authorization: Bearer <staff_access_jwt>
+Content-Type: application/json
+
+{"project":10,"name":"Specialties API","backend_service":201,"base_path":"/specialties"}
+```
+
+Both routes are forwarded to the same DoctorService host, with their **complete incoming path** appended (not only the resource-ID suffix). Because the public and internal paths are intentionally identical, this design does **not** support path rewrites.
 
 Then separately configure the route's methods:
 
@@ -81,7 +102,7 @@ Content-Type: application/json
 {"route":301,"method":"DELETE","auth_policy":"api_key_and_jwt"}
 ```
 
-A new Route with no RouteMethod records is not callable. The demo seeder populates the five supported methods automatically. Admin APIs expose create/list, not general update/delete for all entities; Django admin or a future management API is needed to edit existing policies.
+The `Route` API no longer has a `target_url` field. `BackendService.base_url` is an operator-approved origin with no path, query string or fragment. An empty base URL is allowed for an unconfigured service and returns 503 at forwarding time. A new Route with no RouteMethod records is not callable. The demo seeder populates the five supported methods automatically. Admin APIs expose create/list, not general update/delete for all entities; Django admin or a future management API is needed to edit existing policies.
 
 ## Demo setup
 
@@ -91,7 +112,7 @@ pip install -r requirements.txt
 python manage.py migrate
 python manage.py createsuperuser
 python manage.py seed_demo --admin-email admin@example.com
-python manage.py test authentication users routes gateway analytics
+python manage.py test authentication users routes gateway analytics client_auth
 ```
 
 Or run the full multi-container environment:
@@ -114,6 +135,8 @@ The public gateway is normally `http://localhost:8000`. The downstream demo serv
 To avoid silent access widening, it intentionally fails if previously method-specific RoutePermission grants would become broader, or if old route records for one base path point to different destinations/backend services. Review and normalize those cases manually first. Project names and service names must also become unique as described above.
 
 The APIKey migration intentionally fails if more than one key exists for an application; remove excess keys deliberately first. After migration, `POST /admin-api/keys` rotates the application's single key **in place**, invalidating the old secret immediately. Coordinate key rotation with the calling backend.
+
+**Backend URL migration:** A further migration moves old `Route.target_url` configurations into a single `BackendService.base_url` per service. It refuses routes whose backend path differs from `Route.base_path`, routes that point to conflicting hosts within one service, and configured routes without an associated service. Resolve these incompatibilities before upgrading. No automatic rewrite or destination guessing occurs. Existing application JWT issuance, refresh, tenant-bound verification and method-specific authentication are unchanged.
 
 These data transformations are not designed to be automatically reversed. Do not deploy an older gateway binary against the new schema.
 
@@ -192,7 +215,7 @@ The platform staff JWT uses a **different signing domain** and **cannot** authen
 ```bash
 python manage.py check
 python manage.py makemigrations --check --dry-run
-python manage.py test authentication users routes gateway analytics
+python manage.py test authentication users routes gateway analytics client_auth
 docker compose config --quiet
 ```
 
