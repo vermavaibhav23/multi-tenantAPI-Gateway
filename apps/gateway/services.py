@@ -82,13 +82,12 @@ class RouteResolver:
         routes = Route.objects.select_related('backend_service').filter(
             project=project, backend_service__project=project,
             backend_service__is_active=True, is_active=True,
-        ).order_by('-backend_service__base_path')
-        for route in routes:
+        )
+        # A more specific prefix always wins, even when its method is denied.
+        for route in sorted(routes, key=lambda item: len(item.backend_service.base_path), reverse=True):
             base_path = route.backend_service.base_path
-            if method not in route.allowed_methods:
-                continue
             if base_path == normalized or normalized.startswith(f'{base_path}/'):
-                return route
+                return route if method in route.allowed_methods else None
         return None
 
 
