@@ -107,11 +107,13 @@ class GatewayRequestProxy:
         validate_target_url(target_url)
         excluded = {'host', 'content-length', 'connection', 'keep-alive', 'transfer-encoding',
                     'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate',
-                    'x-api-key', 'x-tenant-id', 'x-application-id'}
+                    'x-api-key', 'x-tenant-id', 'x-application-id', 'authorization'}
         excluded.update(h.strip().lower() for h in request.headers.get('Connection', '').split(','))
         headers = {k: v for k, v in request.headers.items()
                    if k.lower().replace('_', '-') not in excluded and not k.lower().replace('_', '-').startswith('x-gatescale-')}
         headers['X-GateScale-Application-ID'] = str(request.application.id)
+        if getattr(request, 'client_user', None) is not None:
+            headers['X-GateScale-Client-User-ID'] = str(request.client_user.id)
         try:
             with httpx.Client(timeout=10.0, follow_redirects=False, trust_env=False) as client:
                 response = client.request(
@@ -143,6 +145,7 @@ class GatewayLogger:
             downstream_service=route.backend_service.slug if route and route.backend_service else '',
             application=api_key.application if api_key else None,
             customer=request.user if getattr(request, 'user', None) and request.user.is_authenticated else None,
+            client_user=getattr(request, 'client_user', None),
         )
 
 

@@ -4,8 +4,7 @@ from urllib.parse import urlsplit
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.http import HttpResponse, JsonResponse
-from rest_framework_simplejwt.authentication import JWTAuthentication
-from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from client_auth.services import ClientTokenError, authenticate_client_bearer
 from rest_framework.views import APIView
 
 from routes.destinations import validate_target_url
@@ -56,12 +55,11 @@ class GatewayProxyView(APIView):
             return reject('Application is not allowed to access this route.', 403, route)
         if method_policy.auth_policy == RouteMethod.AUTH_API_KEY_AND_JWT:
             try:
-                auth_result = JWTAuthentication().authenticate(request)
-            except (InvalidToken, TokenError):
-                return reject('Invalid customer token.', 401, route)
-            if auth_result is None:
-                return reject('Missing customer bearer token.', 401, route)
-            request.user, request.auth = auth_result
+                request.client_user = authenticate_client_bearer(
+                    request.headers.get('Authorization'), request.application
+                )
+            except ClientTokenError:
+                return reject('Invalid or missing application-user token.', 401, route)
 
         application = getattr(request, 'application', None)
         if not application:

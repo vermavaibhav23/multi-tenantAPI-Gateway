@@ -6,6 +6,7 @@ class RequestLog(models.Model):
     api_key = models.ForeignKey('authentication.APIKey', on_delete=models.SET_NULL, null=True, blank=True, related_name='request_logs')
     application = models.ForeignKey('authentication.Application', on_delete=models.SET_NULL, null=True, blank=True, related_name='request_logs')
     customer = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True, blank=True, related_name='gateway_request_logs')
+    client_user = models.ForeignKey('client_auth.ApplicationUser', on_delete=models.SET_NULL, null=True, blank=True, related_name='request_logs')
     route = models.ForeignKey('routes.Route', on_delete=models.SET_NULL, null=True, blank=True, related_name='request_logs')
     endpoint = models.CharField(max_length=255)
     method = models.CharField(max_length=10, default='GET')

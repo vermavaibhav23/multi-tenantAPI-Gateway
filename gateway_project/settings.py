@@ -24,6 +24,7 @@ INSTALLED_APPS = [
     'routes',
     'gateway',
     'analytics',
+    'client_auth',
 ]
 
 MIDDLEWARE = [
@@ -116,6 +117,14 @@ SIMPLE_JWT = {
     'ROTATE_REFRESH_TOKENS': False,
     'BLACKLIST_AFTER_ROTATION': True,
 }
+
+# A separate signing domain from the platform-staff SimpleJWT tokens.
+# Configure CLIENT_JWT_SIGNING_KEY separately and identically on all gateway replicas.
+CLIENT_JWT_SIGNING_KEY = os.getenv('CLIENT_JWT_SIGNING_KEY') or (SECRET_KEY + ':client-auth')
+CLIENT_JWT_ISSUER = 'servlink-client-auth'
+CLIENT_JWT_AUDIENCE = 'servlink-gateway'
+CLIENT_ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
+CLIENT_REFRESH_TOKEN_LIFETIME = timedelta(days=7)
 
 REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
 CACHES = {
