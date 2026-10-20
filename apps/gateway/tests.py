@@ -8,6 +8,8 @@ from django.contrib.auth import get_user_model
 from django.test import override_settings
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
+from client_auth.models import ApplicationUser
+from client_auth.services import issue_token_pair
 
 from authentication.models import APIKey, Application, RoutePermission
 from gateway.services import ProductResponseCache, RedisRateLimiter
@@ -51,8 +53,12 @@ class GatewayRoutingTests(APITestCase):
     def headers(self, jwt=False, raw_key=None):
         headers = {'HTTP_X_API_KEY': raw_key or self.key}
         if jwt:
-            headers['HTTP_AUTHORIZATION'] = str('Bearer ' + str(
-                RefreshToken.for_user(self.user).access_token))
+            user, _ = ApplicationUser.objects.get_or_create(
+                application=self.api_key.application,
+                email='doctor@hospital.example',
+                defaults={'password_hash': 'unusable-password'},
+            )
+            headers['HTTP_AUTHORIZATION'] = 'Bearer ' + issue_token_pair(user)['access']
         return headers
 
     def fake_backend(self):
@@ -100,6 +106,9 @@ class GatewayRoutingTests(APITestCase):
             self.assertEqual(self.client.get('/gateway/doctors', **self.headers()).status_code, 200)
             self.assertEqual(self.client.post('/gateway/doctors', **self.headers()).status_code, 401)
             self.assertEqual(self.client.delete('/gateway/doctors/456', **self.headers()).status_code, 401)
+            staff_access = str(RefreshToken.for_user(self.user).access_token)
+            self.assertEqual(self.client.post('/gateway/doctors', **self.headers(
+                jwt=False), HTTP_AUTHORIZATION='Bearer ' + staff_access).status_code, 401)
             self.assertEqual(self.client.post('/gateway/doctors', **self.headers(jwt=True)).status_code, 200)
             self.assertEqual(proxy.call_count, 2)
 

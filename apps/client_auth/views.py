@@ -13,8 +13,7 @@ from .serializers import (
     ClientLoginSerializer, ClientRefreshSerializer,
 )
 from .services import (
-    ClientTokenError, _make_token, authenticate_client_bearer,
-    issue_token_pair, verify_client_token,
+    ClientTokenError, _make_token, issue_token_pair, verify_client_token,
 )
 from django.conf import settings
 
@@ -98,7 +97,6 @@ class ClientRefreshView(APIView):
             )
         except ClientTokenError:
             return Response({'detail': 'Invalid or expired refresh token.'}, status=401)
-        from .services import _make_token
         return Response({
             'access': _make_token(user, 'access', settings.CLIENT_ACCESS_TOKEN_LIFETIME),
             'token_type': 'Bearer',

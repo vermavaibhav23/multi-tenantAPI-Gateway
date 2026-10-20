@@ -20,7 +20,7 @@ class ApplicationUser(models.Model):
                 fields=['application', 'email'], name='clientuser_application_email_unique'
             )
         ]
-        indexes = [models.Index(fields=['application', 'is_active'])]
+        indexes = [models.Index(fields=['application', 'is_active'], name='client_auth_app_active_idx')]
 
     def set_password(self, raw_password):
         self.password_hash = make_password(raw_password)
