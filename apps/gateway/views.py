@@ -68,6 +68,9 @@ class GatewayProxyView(APIView):
         if not RedisRateLimiter().allow_request(rate_key, limit, window_seconds):
             return reject('Rate limit exceeded', 429, route, error_key='error')
 
+        if not route.backend_service.target_url:
+            return reject('No healthy backends for this route.', 503, route)
+
         cache_client = ProductResponseCache()
         target_url = GatewayRequestProxy.build_target_url(route, route_path)
         try:
@@ -92,9 +95,6 @@ class GatewayProxyView(APIView):
                 return HttpResponse(cached, status=200, content_type='application/json')
         elif request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
             cache_client.invalidate_prefix(project_cache_prefix)
-
-        if not route.backend_service.target_url:
-            return reject('No healthy backends for this route.', 503, route)
 
         started = time.time()
         response = GatewayRequestProxy.proxy(request, target_url)
