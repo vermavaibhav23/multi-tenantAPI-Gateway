@@ -10,7 +10,7 @@ from users.models import Project
 
 
 class Command(BaseCommand):
-    help = 'Create missing industry demo projects, shared services and routes; preserve existing configuration.'
+    help = 'Create missing industry demo projects and one base route per service; preserve existing configuration.'
 
     def add_arguments(self, parser):
         parser.add_argument('--admin-email', required=True, help='Existing active staff account that owns the bundles.')
@@ -33,11 +33,13 @@ class Command(BaseCommand):
                     validate_target_url(target)
                 except ValidationError as exc:
                     raise CommandError(f'Approve the demo backend origin for {host} before seeding.') from exc
-                service, _ = BackendService.objects.get_or_create(project=project, slug=host,
-                                                                 defaults={'name': service_name})
-                for method, _ in Route.METHOD_CHOICES:
-                    Route.objects.get_or_create(project=project, method=method, path=path, defaults={
-                        'name': f'{method} {service_name} routing test', 'backend_service': service,
-                        'target_url': target, 'auth_policy': Route.AUTH_API_KEY_ONLY,
-                    })
+                service, _ = BackendService.objects.get_or_create(
+                    project=project, slug=host,
+                    defaults={'name': service_name, 'base_path': path, 'target_url': target},
+                )
+                if service.base_path != path:
+                    raise CommandError(f'Existing service {host} uses {service.base_path}, expected {path}.')
+                Route.objects.get_or_create(project=project, backend_service=service, defaults={
+                    'name': f'{service_name} routing test', 'auth_policy': Route.AUTH_API_KEY_ONLY,
+                })
         self.stdout.write(self.style.SUCCESS('Demo bundles ready. Create business applications using /admin-api/applications.'))
