@@ -2,14 +2,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from unittest.mock import patch
 
+import httpx
+import redis
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import override_settings
-import redis
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from authentication.models import APIKey, Application
+from authentication.models import APIKey, Application, RoutePermission
 from routes.models import BackendService, Route
 from users.models import Project
 from gateway.services import ProductResponseCache, RedisRateLimiter
@@ -18,33 +19,44 @@ from gateway.services import ProductResponseCache, RedisRateLimiter
 class GatewayRoutingTests(APITestCase):
     def setUp(self):
         self.allowed_origins = ['http://127.0.0.1:9002', 'http://127.0.0.1:1']
-        origins = override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=self.allowed_origins, GATEWAY_CACHEABLE_BACKEND_HOSTS=['127.0.0.1'])
+        origins = override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=self.allowed_origins,
+                                    GATEWAY_CACHEABLE_BACKEND_HOSTS=['127.0.0.1'])
         origins.enable()
         self.addCleanup(origins.disable)
         offline = patch('redis.Redis.execute_command', side_effect=redis.ConnectionError('test offline'))
         offline.start()
         self.addCleanup(offline.stop)
-        self.user = get_user_model().objects.create_user(
-            username='gateway-owner',
-            email='gateway@example.com',
-            password='password123',
-        )
+        self.user = get_user_model().objects.create_user(username='owner', email='gateway@example.com',
+                                                          password='password123')
         self.project = Project.objects.create(owner=self.user, name='Orders', slug='orders')
-        self.product_service = BackendService.objects.create(project=self.project, name='Product Service', slug='product-service')
         self.api_key, self.raw_key = APIKey.create_for_project(self.project, 'gateway-key')
         cache.clear()
         ProductResponseCache._memory_store.clear()
         RedisRateLimiter._memory_store.clear()
 
-    def _auth_headers(self):
-        token = RefreshToken.for_user(self.user).access_token
-        return {'X-API-Key': self.raw_key, 'Authorization': f'Bearer {token}'}
+    def add_route(self, path, target_url='', project=None, methods=None, auth_policy=Route.AUTH_API_KEY_ONLY):
+        project = project or self.project
+        service = BackendService.objects.create(project=project, name=path, slug='service-' + path.strip('/').replace('/', '-'),
+                                                base_path=path, target_url=target_url)
+        route = Route.objects.create(project=project, backend_service=service, name=path, auth_policy=auth_policy)
+        if methods is not None:
+            route.allowed_methods = methods
+            route.save(update_fields=['allowed_methods'])
+        return route
 
-    def _make_backend_server(self, payload='ok', status=200):
+    def headers(self, jwt=False):
+        headers = {'HTTP_X_API_KEY': self.raw_key}
+        if jwt:
+            headers['HTTP_AUTHORIZATION'] = f'Bearer {RefreshToken.for_user(self.user).access_token}'
+        return headers
+
+    def fake_backend(self, payload='{"ok": true}'):
+        requests = []
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
-                body = payload.encode('utf-8')
-                self.send_response(status)
+                requests.append(self.path)
+                body = payload.encode()
+                self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(body)))
                 self.end_headers()
@@ -54,246 +66,104 @@ class GatewayRoutingTests(APITestCase):
                 pass
 
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        self.allowed_origins.append(f'http://127.0.0.1:{server.server_address[1]}')
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        return server, thread
+        self.addCleanup(server.shutdown)
+        self.addCleanup(server.server_close)
+        self.addCleanup(lambda: thread.join(timeout=2))
+        origin = f'http://127.0.0.1:{server.server_address[1]}'
+        self.allowed_origins.append(origin)
+        return origin, requests
 
-    def test_successful_forwarding(self):
-        server, thread = self._make_backend_server(payload='{"status": "ok"}')
-        port = server.server_address[1]
-        Route.objects.create(
-            project=self.project,
-            backend_service=self.product_service,
-            name='Users route',
-            method='GET',
-            path='/users',
-            target_url=f'http://127.0.0.1:{port}/users',
-        )
-        response = self.client.get('/gateway/users', headers={'X-API-Key': self.raw_key})
+    def test_forwards_dynamic_suffix_and_query(self):
+        origin, received = self.fake_backend()
+        self.add_route('/doctors', origin + '/internal/doctors')
+        response = self.client.get('/gateway/doctors/456?active=1', **self.headers())
         self.assertEqual(response.status_code, 200)
-        self.assertIn('status', response.json())
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+        self.assertEqual(received, ['/internal/doctors/456?active=1'])
 
-    def test_customer_api_requires_jwt(self):
-        Route.objects.create(
-            project=self.project,
-            backend_service=self.product_service,
-            name='Products',
-            method='GET',
-            path='/products',
-            target_url='http://127.0.0.1:9002/products',
-            auth_policy=Route.AUTH_API_KEY_AND_JWT,
-        )
-        response = self.client.get('/gateway/products', headers={'X-API-Key': self.raw_key})
-        self.assertEqual(response.status_code, 401)
+    def test_get_and_post_reuse_one_route_and_preserve_method(self):
+        self.add_route('/doctors', 'http://127.0.0.1:9002/doctors')
+        with patch('gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True})) as proxy:
+            self.assertEqual(self.client.get('/gateway/doctors/456', **self.headers()).status_code, 200)
+            self.assertEqual(self.client.post('/gateway/doctors', data=b'hello',
+                                              content_type='application/octet-stream', **self.headers()).status_code, 200)
+        self.assertEqual(Route.objects.count(), 1)
+        self.assertEqual(proxy.call_args.args[0].method, 'POST')
+        self.assertEqual(proxy.call_args.args[1], 'http://127.0.0.1:9002/doctors')
 
-    def test_jwt_protected_route_routes_to_configured_service(self):
-        server, thread = self._make_backend_server(payload='[{"id": 1, "name": "Laptop", "price": 50000}]')
-        port = server.server_address[1]
-        route = Route.objects.create(
-            project=self.project,
-            backend_service=self.product_service,
-            name='Products',
-            method='GET',
-            path='/products',
-            target_url=f'http://127.0.0.1:{port}/products',
-            auth_policy=Route.AUTH_API_KEY_AND_JWT,
-        )
-        response = self.client.get('/gateway/products', headers=self._auth_headers())
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()[0]['name'], 'Laptop')
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    def test_jwt_protected_route(self):
+        self.add_route('/doctors', 'http://127.0.0.1:9002/doctors',
+                       auth_policy=Route.AUTH_API_KEY_AND_JWT)
+        self.assertEqual(self.client.get('/gateway/doctors', **self.headers()).status_code, 401)
+        with patch('gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True})):
+            self.assertEqual(self.client.get('/gateway/doctors', **self.headers(jwt=True)).status_code, 200)
 
-    def test_project_can_use_custom_banking_backend_service(self):
-        banking_project = Project.objects.create(owner=self.user, name='Banking API', slug='banking-api')
-        account_service = BackendService.objects.create(project=banking_project, name='Account Service', slug='account-service')
-        banking_key, raw_key = APIKey.create_for_project(banking_project, 'phonepe-key')
-        server, thread = self._make_backend_server(payload='{"account_id": 42, "balance": 1000}')
-        port = server.server_address[1]
-        route = Route.objects.create(
-            project=banking_project,
-            backend_service=account_service,
-            name='Accounts',
-            method='GET',
-            path='/accounts',
-            target_url=f'http://127.0.0.1:{port}/accounts',
-        )
-
-        response = self.client.get('/gateway/accounts', headers={'X-API-Key': raw_key})
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['account_id'], 42)
-        self.assertEqual(banking_key.application.project, banking_project)
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-    def test_route_without_target_returns_no_healthy_backend(self):
-        transaction_service = BackendService.objects.create(
-            project=self.project,
-            name='Transaction Service',
-            slug='transaction-service',
-        )
-        Route.objects.create(
-            project=self.project,
-            backend_service=transaction_service,
-            name='Transactions',
-            method='GET',
-            path='/transactions',
-        )
-
-        response = self.client.get('/gateway/transactions', headers={'X-API-Key': self.raw_key})
-
+    def test_unconfigured_route_returns_503(self):
+        self.add_route('/doctors')
+        response = self.client.get('/gateway/doctors/456', **self.headers())
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()['detail'], 'No healthy backends for this route.')
 
-    def test_invalid_route(self):
-        response = self.client.get('/gateway/missing', headers={'X-API-Key': self.raw_key})
-        self.assertEqual(response.status_code, 404)
+    def test_missing_or_prefix_collision_returns_404(self):
+        self.add_route('/doctors', 'http://127.0.0.1:9002/doctors')
+        self.assertEqual(self.client.get('/gateway/missing', **self.headers()).status_code, 404)
+        self.assertEqual(self.client.get('/gateway/doctors-other', **self.headers()).status_code, 404)
 
-    def test_backend_unavailable(self):
-        Route.objects.create(
-            project=self.project,
-            backend_service=self.product_service,
-            name='Broken route',
-            method='GET',
-            path='/broken',
-            target_url='http://127.0.0.1:1/broken',
-        )
-        response = self.client.get('/gateway/broken', headers={'X-API-Key': self.raw_key})
-        self.assertEqual(response.status_code, 503)
+    def test_service_must_match_project_and_be_active(self):
+        route = self.add_route('/doctors', 'http://127.0.0.1:9002/doctors')
+        other = Project.objects.create(owner=self.user, name='Other', slug='other')
+        foreign = BackendService.objects.create(project=other, name='Foreign', base_path='/doctors')
+        Route.objects.filter(pk=route.pk).update(backend_service=foreign)
+        self.assertEqual(self.client.get('/gateway/doctors', **self.headers()).status_code, 404)
+        Route.objects.filter(pk=route.pk).update(backend_service=route.backend_service)
+        route.backend_service.is_active = False
+        route.backend_service.save(update_fields=['is_active'])
+        self.assertEqual(self.client.get('/gateway/doctors', **self.headers()).status_code, 404)
 
-    def test_rate_limiting_blocks_by_api_key_across_routes(self):
-        application = self.api_key.application
-        application.plan = Application.PLAN_NORMAL
-        application.save(update_fields=['plan'])
-        Route.objects.create(
-            project=self.project,
-            backend_service=self.product_service,
-            name='Limited',
-            method='GET',
-            path='/limited',
-            target_url='http://127.0.0.1:9002/products',
-        )
-        Route.objects.create(
-            project=self.project,
-            backend_service=self.product_service,
-            name='Other limited',
-            method='GET',
-            path='/other-limited',
-            target_url='http://127.0.0.1:9002/other-products',
-        )
-        with patch.dict(Application.PLAN_LIMITS, {Application.PLAN_NORMAL: (1, 60)}), patch('gateway.views.GatewayRequestProxy.proxy') as proxy:
-            proxy.return_value = type('Response', (), {
-                'headers': {'content-type': 'application/json'},
-                'status_code': 200,
-                'text': '{"ok": true}',
-                'content': b'{"ok": true}',
-            })()
-            first = self.client.get('/gateway/limited', headers={'X-API-Key': self.raw_key})
-            second = self.client.get('/gateway/other-limited', headers={'X-API-Key': self.raw_key})
-        self.assertEqual(first.status_code, 200)
-        self.assertEqual(second.status_code, 429)
+    def test_disallowed_route_method_never_reaches_backend(self):
+        self.add_route('/doctors', 'http://127.0.0.1:9002/doctors', methods=['GET'])
+        with patch('gateway.views.GatewayRequestProxy.proxy') as proxy:
+            self.assertEqual(self.client.delete('/gateway/doctors/456', **self.headers()).status_code, 404)
+            proxy.assert_not_called()
 
-    def test_token_bucket_rate_limiter_refills_over_time(self):
+    def test_method_scoped_application_grant(self):
+        route = self.add_route('/doctors', 'http://127.0.0.1:9002/doctors')
+        RoutePermission.objects.create(application=self.api_key.application, route=route,
+                                       allowed_methods=['GET'])
+        with patch('gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True})) as proxy:
+            self.assertEqual(self.client.get('/gateway/doctors', **self.headers()).status_code, 200)
+            self.assertEqual(self.client.delete('/gateway/doctors/456', **self.headers()).status_code, 403)
+            self.assertEqual(proxy.call_count, 1)
+
+    def test_unavailable_backend_returns_503(self):
+        self.add_route('/broken', 'http://127.0.0.1:1/broken')
+        self.assertEqual(self.client.get('/gateway/broken', **self.headers()).status_code, 503)
+
+    def test_rate_limit_applies_across_http_methods(self):
+        self.add_route('/doctors', 'http://127.0.0.1:9002/doctors')
+        self.api_key.application.plan = Application.PLAN_NORMAL
+        self.api_key.application.save(update_fields=['plan'])
+        with patch.dict(Application.PLAN_LIMITS, {Application.PLAN_NORMAL: (1, 60)}), patch(
+                'gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True})):
+            self.assertEqual(self.client.get('/gateway/doctors', **self.headers()).status_code, 200)
+            self.assertEqual(self.client.post('/gateway/doctors', **self.headers()).status_code, 429)
+
+    def test_cache_is_query_and_application_scoped(self):
+        self.add_route('/products', 'http://127.0.0.1:9002/products')
+        other = Application.objects.create(project=self.project, name='Other application')
+        _, other_key = APIKey.create_for_application(other, 'key')
+        with patch('gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True})) as proxy:
+            self.assertEqual(self.client.get('/gateway/products?page=1', **self.headers()).status_code, 200)
+            self.assertEqual(self.client.get('/gateway/products?page=1', **self.headers()).status_code, 200)
+            self.assertEqual(self.client.get('/gateway/products?page=2', **self.headers()).status_code, 200)
+            self.assertEqual(self.client.get('/gateway/products?page=1', HTTP_X_API_KEY=other_key).status_code, 200)
+            self.assertEqual(proxy.call_count, 3)
+
+    def test_token_bucket_fallback_refills_over_time(self):
         limiter = RedisRateLimiter()
-        RedisRateLimiter._memory_store.clear()
-
         with patch('gateway.services.time.time', side_effect=[0, 0, 29, 30]):
             self.assertTrue(limiter._fallback_allow_request('bucket:test', 2, 60))
             self.assertTrue(limiter._fallback_allow_request('bucket:test', 2, 60))
             self.assertFalse(limiter._fallback_allow_request('bucket:test', 2, 60))
             self.assertTrue(limiter._fallback_allow_request('bucket:test', 2, 60))
-
-    def test_product_cache_hit_avoids_second_backend_call(self):
-        route = Route.objects.create(
-            project=self.project,
-            backend_service=self.product_service,
-            name='Cached products',
-            method='GET',
-            path='/products',
-            target_url='http://127.0.0.1:9002/products',
-        )
-        with patch('gateway.views.GatewayRequestProxy.proxy') as proxy:
-            proxy.return_value = type('Response', (), {
-                'headers': {'content-type': 'application/json'},
-                'status_code': 200,
-                'text': '[{"id": 1}]',
-                'content': b'[{"id": 1}]',
-            })()
-            first = self.client.get('/gateway/products', headers={'X-API-Key': self.raw_key})
-            second = self.client.get('/gateway/products', headers={'X-API-Key': self.raw_key})
-        self.assertEqual(first.status_code, 200)
-        self.assertEqual(second.status_code, 200)
-        self.assertEqual(proxy.call_count, 1)
-
-    def test_cache_is_isolated_by_application(self):
-        other_application = Application.objects.create(project=self.project, name='Myntra', plan=Application.PLAN_NORMAL)
-        other_key, other_raw_key = APIKey.create_for_application(other_application, 'myntra-key')
-        Route.objects.create(
-            project=self.project,
-            backend_service=self.product_service,
-            name='Cached app products',
-            method='GET',
-            path='/app-products',
-            target_url='http://127.0.0.1:9002/app-products',
-        )
-        with patch('gateway.views.GatewayRequestProxy.proxy') as proxy:
-            proxy.side_effect = [
-                type('Response', (), {
-                    'headers': {'content-type': 'application/json'},
-                    'status_code': 200,
-                    'text': '{"app": "nykaa"}',
-                    'content': b'{"app": "nykaa"}',
-                })(),
-                type('Response', (), {
-                    'headers': {'content-type': 'application/json'},
-                    'status_code': 200,
-                    'text': '{"app": "myntra"}',
-                    'content': b'{"app": "myntra"}',
-                })(),
-            ]
-            nykaa_response = self.client.get('/gateway/app-products', headers={'X-API-Key': self.raw_key})
-            myntra_response = self.client.get('/gateway/app-products', headers={'X-API-Key': other_raw_key})
-
-        self.assertEqual(nykaa_response.json()['app'], 'nykaa')
-        self.assertEqual(myntra_response.json()['app'], 'myntra')
-        self.assertEqual(proxy.call_count, 2)
-
-    def test_cache_key_uses_final_target_url_and_query_string(self):
-        Route.objects.create(
-            project=self.project,
-            backend_service=self.product_service,
-            name='Cached product pages',
-            method='GET',
-            path='/catalog',
-            target_url='http://127.0.0.1:9002/products',
-        )
-        with patch('gateway.views.GatewayRequestProxy.proxy') as proxy:
-            proxy.side_effect = [
-                type('Response', (), {
-                    'headers': {'content-type': 'application/json'},
-                    'status_code': 200,
-                    'text': '{"page": 1}',
-                    'content': b'{"page": 1}',
-                })(),
-                type('Response', (), {
-                    'headers': {'content-type': 'application/json'},
-                    'status_code': 200,
-                    'text': '{"page": 2}',
-                    'content': b'{"page": 2}',
-                })(),
-            ]
-            first = self.client.get('/gateway/catalog?page=1', headers={'X-API-Key': self.raw_key})
-            second = self.client.get('/gateway/catalog?page=2', headers={'X-API-Key': self.raw_key})
-            repeat_first = self.client.get('/gateway/catalog?page=1', headers={'X-API-Key': self.raw_key})
-
-        self.assertEqual(first.json()['page'], 1)
-        self.assertEqual(second.json()['page'], 2)
-        self.assertEqual(repeat_first.json()['page'], 1)
-        self.assertEqual(proxy.call_count, 2)
