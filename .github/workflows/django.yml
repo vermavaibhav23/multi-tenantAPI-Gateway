@@ -23,4 +23,4 @@ jobs:
       - name: Unit and integration tests
         env:
           USE_SQLITE: 'True'
-        run: python manage.py test authentication users routes gateway analytics
+        run: python manage.py test authentication users routes gateway analytics client_auth
