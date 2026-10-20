@@ -7,6 +7,10 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 
+def default_permission_methods():
+    return ['GET', 'POST', 'PUT', 'PATCH', 'DELETE']
+
+
 class APIKey(models.Model):
     application = models.ForeignKey('Application', on_delete=models.CASCADE, related_name='api_keys')
     name = models.CharField(max_length=120)
@@ -67,8 +71,8 @@ class APIKey(models.Model):
         api_key.save(update_fields=['last_used_at'])
         return api_key
 
-    def can_access(self, route):
-        return self.application.has_permission(route)
+    def can_access(self, route, method):
+        return self.application.has_permission(route, method)
 
     def revoke(self):
         self.revoked_at = timezone.now()
@@ -105,13 +109,16 @@ class Application(models.Model):
             models.Index(fields=['slug']),
         ]
 
-    def has_permission(self, route):
+    def has_permission(self, route, method):
         if route.project_id != self.project_id or not self.is_active:
+            return False
+        if method not in route.allowed_methods:
             return False
         permissions = self.permissions.all()
         if not permissions.exists():
-            return True
-        return permissions.filter(route=route, is_active=True).exists()
+            return True  # Preserve unrestricted legacy applications.
+        return any(method in permission.allowed_methods for permission in
+                   permissions.filter(route=route, is_active=True))
 
     def resolved_rate_limit(self):
         return self.PLAN_LIMITS.get(self.plan, self.PLAN_LIMITS[self.PLAN_NORMAL])
@@ -129,6 +136,7 @@ class RoutePermission(models.Model):
     application = models.ForeignKey(Application, on_delete=models.CASCADE, related_name='permissions')
     route = models.ForeignKey('routes.Route', on_delete=models.CASCADE, related_name='application_permissions')
     is_active = models.BooleanField(default=True)
+    allowed_methods = models.JSONField(default=default_permission_methods)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
