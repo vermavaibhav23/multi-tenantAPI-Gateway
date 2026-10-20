@@ -27,7 +27,7 @@ Hospital A and Clinic B are separate **Applications** under the **Healthcare Pro
 
 ## Data model and tenant boundary
 
-The existing tables and foreign keys are unchanged; this enhancement adds no migrations.
+This revision moves public base paths and backend targets onto `BackendService` and consolidates method-specific Route records using migrations. Existing incompatible routing configurations must be resolved before applying the migration.
 
 | Entity | Meaning |
 |---|---|
@@ -35,9 +35,9 @@ The existing tables and foreign keys are unchanged; this enhancement adds no mig
 | Project | Industry bundle of reusable backend services |
 | Application | Subscribing business belonging to exactly one project |
 | APIKey | Hashed credential identifying one application; multiple keys share its plan limit |
-| BackendService | Logical service registration inside a project |
-| Route | Project-owned HTTP method/path mapping to one approved `target_url` |
-| RoutePermission | Optional application-specific restriction on project routes |
+| BackendService | Project-owned microservice with one unique public `base_path` and approved internal `target_url` |
+| Route | One project-specific activation/configuration record per BackendService, with allowed HTTP methods and JWT policy |
+| RoutePermission | Optional application-specific permission with its own `allowed_methods` list |
 | RequestLog | Existing project/application/key/route request analytics |
 
 ```text
@@ -61,7 +61,7 @@ Clinic B (Application 5, API key B) ──┘                        │
 
 1. Middleware validates `X-API-Key`, expiry/revocation and application activity.
 2. The key determines the Application and its Project. Caller-supplied tenant IDs do not select a project.
-3. The gateway resolves the project's active route by method and path, checking optional route permissions and JWT policy.
+3. The gateway matches the project's active BackendService base path by complete path segment, checks the Route's allowed methods, the Application's method-specific grants and optional JWT policy.
 4. Redis atomically applies the business's token bucket, keyed by `gateway_rate:application:<id>`.
 5. The gateway validates the configured backend origin, then checks cache only when eligible.
 6. It removes `X-API-Key`, spoofed `X-GateScale-*` headers, and hop-by-hop headers, then inserts `X-GateScale-Application-ID` from the validated application.
@@ -87,7 +87,7 @@ NGINX retains round-robin balancing across three gateways. All gateways use the 
 
 The existing `fashion-*` names are retained for compatibility. The legacy `banking-user-service` container remains available for old routes, but is not part of the Banking demo bundle. Four containers are added, independent of how many businesses subscribe.
 
-Each bundle has 3 services × the 5 existing route methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`): **9 services and 45 routes** across the demo. The dummy server also handles `HEAD` (no response body) and `OPTIONS`; the gateway's configurable method choices remain unchanged. No request body format is required.
+Each bundle has three services with **one Route per service**: **9 services and 9 routes** total across the demo. Each Route allows `GET`, `POST`, `PUT`, `PATCH`, and `DELETE` by default. The dummy server handles `HEAD` and `OPTIONS` internally; those methods are not exposed by the gateway proxy.
 
 ## Local development
 
@@ -177,26 +177,37 @@ The first two requests reach the same container and return different application
 
 Adding `X-GateScale-Application-ID: 9999` cannot impersonate another business; the gateway replaces it. Missing, invalid, expired or revoked API keys return 401. A Healthcare key cannot resolve Banking-only `/accounts` routes. Optional `RoutePermission` records further restrict an application; once records exist, only active matching permissions grant access. With no records, the business may access its project's routes.
 
-The existing `api_key_and_jwt` route policy still validates a bearer token in addition to the key. This JWT system uses the platform's User table and is **not a complete customer-identity solution for unrelated businesses**. The primary multi-business demo uses API-key-only routes.
+The `api_key_and_jwt` Route policy applies to all enabled methods of that service's base path and validates a bearer token in addition to the key. This JWT system uses the platform's User table and is **not a complete customer-identity solution for unrelated businesses**. The primary multi-business demo uses API-key-only routes.
 
 ## Dynamic routing and security
 
-Create an approved custom route with `POST /admin-api/routes`:
+Register a microservice's public base path and approved internal target first:
 
-```json
-{
-  "project": 2,
-  "name": "Doctor routing test",
-  "backend_service_name": "Doctor Service",
-  "backend_service_slug": "healthcare-doctor-service",
-  "method": "GET",
-  "path": "/doctor-test",
-  "target_url": "http://healthcare-doctor-service:8000/doctors",
-  "auth_policy": "api_key_only"
-}
+```http
+POST /admin-api/services
+Content-Type: application/json
+
+{"project":2,"name":"Doctor Service","base_path":"/doctors","target_url":"http://healthcare-doctor-service:8000/doctors"}
 ```
 
-An existing `backend_service` ID may be supplied instead. It must be active and belong to the same project. Cross-project associations are rejected. Runtime resolution also rejects inconsistent or inactive service associations from direct database edits. The existing method/path prefix routing and management APIs remain in place; route state is read from MySQL on each request so changes are not hidden by stale per-worker route caches.
+Then activate one Route record for the returned BackendService ID:
+
+```http
+POST /admin-api/routes
+Content-Type: application/json
+
+{"project":2,"name":"Doctor API","backend_service":10,"allowed_methods":["GET","POST","PUT","PATCH","DELETE"],"auth_policy":"api_key_only"}
+```
+
+Replace `10` with the actual returned service ID. The Route no longer accepts `method`, `path`, or `target_url`. Those are now, respectively, the Route's `allowed_methods` list and the BackendService's `base_path` and `target_url`.
+
+For example, `GET /gateway/doctors/456` matches `/doctors` and forwards to `http://healthcare-doctor-service:8000/doctors/456`. Requests preserve their HTTP method, body and query string. Both `UNIQUE(project_id, base_path)` on BackendService and `UNIQUE(project_id, backend_service_id)` on Route are enforced at the database level. Runtime resolution rejects inactive or foreign-project backend associations.
+
+To allow an Application to GET but not DELETE, add a `RoutePermission` linked to its Route with `allowed_methods=["GET"]`. The legacy default remains unrestricted only when an Application has no RoutePermission records. Once permissions are created, access is limited to active permissions and their allowed methods. To disable a method for every Application, remove it from the Route's `allowed_methods`.
+
+**Migration note:** The migration consolidates existing GET/POST/PUT/PATCH/DELETE records by project/base path, merges application grants without expanding allowed methods, and preserves the existing route JWT policy. It intentionally stops with a clear error if a service uses multiple public base paths, or if records for the same path disagree about destination, backend service or JWT policy. Back up the database and resolve those differences before deployment; the data consolidation is not reversible.
+
+Route configuration is read from MySQL on each request so updates are not hidden by per-worker caches.
 
 Only exact origins in `GATEWAY_ALLOWED_BACKEND_ORIGINS` may be proxied. Defaults are the Docker dummy services, including the retained legacy service. Custom origin configuration replaces that list; an empty list denies all destinations. Both route creation and forwarding validate it. Metadata addresses, unknown hosts, changed ports, credentials in URLs and non-HTTP schemes are rejected. Redirects are not followed; HTTP environment proxy settings are ignored. Only approve operator-controlled hosts and DNS; network egress restrictions remain a deployment responsibility.
 
