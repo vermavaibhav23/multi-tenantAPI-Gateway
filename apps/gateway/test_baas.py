@@ -164,8 +164,7 @@ class BaaSIntegrationTests(APITestCase):
 
     def test_cache_is_application_isolated_and_invalidated(self):
         origin, received = self.backend('fashion-product-service')
-        self.doctor_service().target_url = origin + '/doctors'
-        self.doctor_service().save(update_fields=['target_url'])
+        BackendService.objects.filter(pk=self.doctor_service().pk).update(target_url=origin + '/doctors')
         with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin], GATEWAY_CACHEABLE_BACKEND_HOSTS=['127.0.0.1']):
             for _ in range(2):
                 self.assertEqual(self.get().json()['application_id'], self.app.id)
@@ -181,15 +180,15 @@ class BaaSIntegrationTests(APITestCase):
         with patch('gateway.views.GatewayRequestProxy.proxy',
                    return_value=httpx.Response(200, json={'ok': True})) as proxy:
             for host in ('healthcare-doctor-service', 'banking-account-service'):
-                self.doctor_service().target_url = f'http://{host}:8000/doctors'
-                self.doctor_service().save(update_fields=['target_url'])
+                BackendService.objects.filter(pk=self.doctor_service().pk).update(
+                    target_url=f'http://{host}:8000/doctors')
                 self.assertEqual(self.get().status_code, 200)
                 self.assertEqual(self.get().status_code, 200)
             self.assertEqual(proxy.call_count, 4)
             route.auth_policy = Route.AUTH_API_KEY_AND_JWT
             route.save(update_fields=['auth_policy'])
-            self.doctor_service().target_url = 'http://fashion-product-service:8000/doctors'
-            self.doctor_service().save(update_fields=['target_url'])
+            BackendService.objects.filter(pk=self.doctor_service().pk).update(
+                target_url='http://fashion-product-service:8000/doctors')
             token = str(RefreshToken.for_user(self.admin).access_token)
             for _ in range(2):
                 self.assertEqual(self.get(HTTP_AUTHORIZATION=f'Bearer {token}').status_code, 200)
@@ -197,8 +196,8 @@ class BaaSIntegrationTests(APITestCase):
         self.assertFalse(ProductResponseCache._memory_store)
 
     def test_private_response_headers_prevent_caching(self):
-        self.doctor_service().target_url = 'http://fashion-product-service:8000/doctors'
-        self.doctor_service().save(update_fields=['target_url'])
+        BackendService.objects.filter(pk=self.doctor_service().pk).update(
+            target_url='http://fashion-product-service:8000/doctors')
         for headers in ({'cache-control': 'private'}, {'cache-control': 'no-store'},
                         {'set-cookie': 'session=value'}, {'vary': 'Authorization'}):
             with patch('gateway.views.GatewayRequestProxy.proxy',
