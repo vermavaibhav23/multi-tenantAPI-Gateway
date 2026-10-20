@@ -1,0 +1,200 @@
+from unittest.mock import patch
+
+import httpx
+import redis
+from django.test import RequestFactory, override_settings
+from rest_framework.test import APITestCase
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from analytics.models import RequestLog
+from authentication.models import APIKey, Application
+from client_auth.models import ApplicationUser
+from client_auth.services import issue_token_pair
+from gateway.services import GatewayRequestProxy, RedisRateLimiter
+from routes.models import BackendService, Route, RouteMethod
+from users.models import Project, User
+
+
+@override_settings(
+    GATEWAY_ALLOWED_BACKEND_ORIGINS=['http://fashion-product-service:8000'],
+    CLIENT_JWT_SIGNING_KEY='test-client-key-distinct-from-staff',
+)
+class ClientUserAuthenticationTests(APITestCase):
+    def setUp(self):
+        offline = patch('redis.Redis.execute_command',
+                        side_effect=redis.ConnectionError('test offline'))
+        offline.start()
+        self.addCleanup(offline.stop)
+        RedisRateLimiter._memory_store.clear()
+        self.admin = User.objects.create_user(
+            username='owner', email='owner@example.com',
+            password='AdminSecret123!', is_staff=True,
+        )
+        self.project = Project.objects.create(
+            owner=self.admin, name='Healthcare', slug='healthcare'
+        )
+        self.app_a = Application.objects.create(project=self.project, name='Hospital A')
+        self.app_b = Application.objects.create(project=self.project, name='Clinic B')
+        _, self.key_a = APIKey.create_for_application(self.app_a, 'hospital-a')
+        _, self.key_b = APIKey.create_for_application(self.app_b, 'clinic-b')
+
+        service = BackendService.objects.create(
+            project=self.project, name='Doctor Service', slug='doctor-service'
+        )
+        self.route = Route.objects.create(
+            project=self.project, name='Doctors', backend_service=service,
+            base_path='/doctors',
+            target_url='http://fashion-product-service:8000/doctors',
+        )
+        RouteMethod.objects.create(
+            route=self.route, method='GET', auth_policy=RouteMethod.AUTH_API_KEY_AND_JWT
+        )
+        self.password = 'ApplicationTestPassword123!'
+        self.client_user_a = ApplicationUser(
+            application=self.app_a, email='doctor@example.com'
+        )
+        self.client_user_a.set_password(self.password)
+        self.client_user_a.save()
+        self.client_user_b = ApplicationUser(
+            application=self.app_b, email='doctor@example.com'
+        )
+        self.client_user_b.set_password(self.password)
+        self.client_user_b.save()
+
+    def _login(self, key, email='doctor@example.com', password=None):
+        return self.client.post('/gateway/auth/login', {
+            'email': email, 'password': password or self.password,
+        }, format='json', HTTP_X_API_KEY=key)
+
+    def _protected(self, key, access):
+        return self.client.get('/gateway/doctors/456', HTTP_X_API_KEY=key,
+                               HTTP_AUTHORIZATION='Bearer ' + access)
+
+    def test_app_user_is_not_a_platform_user_and_password_is_hashed(self):
+        self.assertNotEqual(self.client_user_a.password_hash, self.password)
+        self.assertTrue(self.client_user_a.check_password(self.password))
+        self.assertFalse(User.objects.filter(email='doctor@example.com').exists())
+
+    def test_login_requires_app_key_and_correct_application_credentials(self):
+        self.assertEqual(self.client.post('/gateway/auth/login', {
+            'email': 'doctor@example.com', 'password': self.password,
+        }).status_code, 401)
+        self.assertEqual(self._login(self.key_a, password='wrong').status_code, 401)
+        success = self._login(self.key_a)
+        self.assertEqual(success.status_code, 200, success.data)
+        self.assertIn('access', success.data)
+        self.assertIn('refresh', success.data)
+        self.assertEqual(success.data['expires_in'], 900)
+
+    def test_valid_client_token_passes_and_is_logged_with_user(self):
+        token = self._login(self.key_a).data['access']
+        with patch('gateway.views.GatewayRequestProxy.proxy',
+                   return_value=httpx.Response(200, json={'ok': True})) as proxy:
+            resp = self._protected(self.key_a, token)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(proxy.call_count, 1)
+        self.assertEqual(RequestLog.objects.get().client_user_id, self.client_user_a.pk)
+
+    def test_client_jwt_cannot_cross_applications_even_if_same_email(self):
+        token = self._login(self.key_a).data['access']
+        self.assertEqual(self._protected(self.key_b, token).status_code, 401)
+        token_b = self._login(self.key_b).data['access']
+        with patch('gateway.views.GatewayRequestProxy.proxy',
+                   return_value=httpx.Response(200, json={'ok': True})):
+            self.assertEqual(self._protected(self.key_b, token_b).status_code, 200)
+
+    def test_staff_jwt_cannot_authenticate_client_endpoint(self):
+        staff = str(RefreshToken.for_user(self.admin).access_token)
+        self.assertEqual(self._protected(self.key_a, staff).status_code, 401)
+
+    def test_refresh_issues_new_access_and_rejects_access_as_refresh(self):
+        pair = self._login(self.key_a).data
+        refreshed = self.client.post('/gateway/auth/refresh', {
+            'refresh': pair['refresh'],
+        }, format='json', HTTP_X_API_KEY=self.key_a)
+        self.assertEqual(refreshed.status_code, 200, refreshed.data)
+        self.assertIn('access', refreshed.data)
+        self.assertEqual(self._protected(self.key_a, pair['refresh']).status_code, 401)
+        self.assertEqual(self.client.post('/gateway/auth/refresh', {
+            'refresh': pair['access'],
+        }, format='json', HTTP_X_API_KEY=self.key_a).status_code, 401)
+        self.assertEqual(self.client.post('/gateway/auth/refresh', {
+            'refresh': pair['refresh'],
+        }, format='json', HTTP_X_API_KEY=self.key_b).status_code, 401)
+
+    def test_staff_only_provisioning_and_deactivation_invalidate_access(self):
+        admin_token = str(RefreshToken.for_user(self.admin).access_token)
+        response = self.client.post('/admin-api/application-users', {
+            'application': self.app_a.pk, 'email': 'New@Example.Com',
+            'password': 'AnotherValidPassword123!',
+        }, format='json', HTTP_AUTHORIZATION='Bearer ' + admin_token)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['email'], 'new@example.com')
+        self.assertNotIn('password', response.data)
+        self.assertNotIn('password_hash', response.data)
+        duplicate = self.client.post('/admin-api/application-users', {
+            'application': self.app_a.pk, 'email': 'NEW@EXAMPLE.COM',
+            'password': 'AnotherValidPassword123!',
+        }, format='json', HTTP_AUTHORIZATION='Bearer ' + admin_token)
+        self.assertEqual(duplicate.status_code, 400)
+        anonymous = self.client.post('/admin-api/application-users', {
+            'application': self.app_a.pk, 'email': 'no@example.com',
+            'password': 'AnotherValidPassword123!',
+        }, format='json')
+        self.assertEqual(anonymous.status_code, 401)
+
+        pair = self._login(self.key_a).data
+        disabled = self.client.post(
+            f'/admin-api/application-users/{self.client_user_a.pk}/disable',
+            HTTP_AUTHORIZATION='Bearer ' + admin_token,
+        )
+        self.assertEqual(disabled.status_code, 200)
+        self.assertEqual(self._protected(self.key_a, pair['access']).status_code, 401)
+        self.assertEqual(self.client.post('/gateway/auth/refresh', {
+            'refresh': pair['refresh'],
+        }, format='json', HTTP_X_API_KEY=self.key_a).status_code, 401)
+        self.assertEqual(self._login(self.key_a).status_code, 401)
+
+    def test_stolen_or_modified_token_and_missing_key_are_rejected(self):
+        token = self._login(self.key_a).data['access']
+        self.assertEqual(self._protected(self.key_a, token + 'tampered').status_code, 401)
+        self.assertEqual(self.client.get('/gateway/doctors/456',
+                                         HTTP_AUTHORIZATION='Bearer ' + token).status_code, 401)
+        _, rotated = APIKey.create_for_application(self.app_a, 'rotated')
+        self.assertEqual(self._protected(self.key_a, token).status_code, 401)
+        with patch('gateway.views.GatewayRequestProxy.proxy',
+                   return_value=httpx.Response(200, json={'ok': True})):
+            self.assertEqual(self._protected(rotated, token).status_code, 200)
+
+    def test_gateway_passes_verified_identity_not_bearer_or_spoofed_headers(self):
+        req = RequestFactory().get(
+            '/gateway/doctors/456',
+            HTTP_AUTHORIZATION='Bearer secret',
+            HTTP_X_GATESCALE_CLIENT_USER_ID='99999',
+        )
+        req.application = self.app_a
+        req.client_user = self.client_user_a
+        with patch('gateway.services.httpx.Client') as mocked:
+            mocked.return_value.__enter__.return_value.request.return_value = httpx.Response(
+                200, json={'ok': True},
+            )
+            GatewayRequestProxy.proxy(req, 'http://fashion-product-service:8000/doctors/456')
+        forwarded = mocked.return_value.__enter__.return_value.request.call_args.kwargs['headers']
+        self.assertNotIn('Authorization', forwarded)
+        self.assertEqual(forwarded['X-GateScale-Application-ID'], str(self.app_a.id))
+        self.assertEqual(forwarded['X-GateScale-Client-User-ID'], str(self.client_user_a.id))
+
+    def test_staff_cannot_create_client_for_other_admin_project(self):
+        other_staff = User.objects.create_user(username='other', email='other@example.com',
+                                               password='StaffOtherPassword123!', is_staff=True)
+        other_token = str(RefreshToken.for_user(other_staff).access_token)
+        response = self.client.post('/admin-api/application-users', {
+            'application': self.app_a.pk, 'email': 'new@example.com',
+            'password': 'AnotherValidPassword123!',
+        }, format='json', HTTP_AUTHORIZATION='Bearer ' + other_token)
+        self.assertEqual(response.status_code, 400)
+
+    def test_login_rate_limit_blocks_excessive_attempts(self):
+        for _ in range(10):
+            self.assertEqual(self._login(self.key_a, password='wrong').status_code, 401)
+        self.assertEqual(self._login(self.key_a).status_code, 429)
