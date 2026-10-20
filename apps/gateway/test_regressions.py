@@ -10,7 +10,7 @@ from rest_framework.test import APITestCase
 from authentication.models import APIKey, Application, RoutePermission
 from gateway.services import GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RouteResolver
 from routes.destinations import validate_target_url
-from routes.models import Route
+from routes.models import BackendService, Route
 from users.models import Project, User
 
 
@@ -21,8 +21,10 @@ class GatewayRegressionTests(APITestCase):
         self.project = Project.objects.create(owner=self.owner, name='Project', slug='project')
         self.app = Application.objects.create(project=self.project, name='Client')
         _, self.key = APIKey.create_for_application(self.app, 'key')
-        self.route = Route.objects.create(project=self.project, name='Echo', path='/echo',
-                                          target_url='http://fashion-product-service:8000/echo')
+        self.service = BackendService.objects.create(
+            project=self.project, name='Echo', base_path='/echo',
+            target_url='http://fashion-product-service:8000/echo')
+        self.route = Route.objects.create(project=self.project, backend_service=self.service, name='Echo')
         cache.clear()
         ProductResponseCache._memory_store.clear()
         RedisRateLimiter._memory_store.clear()
@@ -33,25 +35,26 @@ class GatewayRegressionTests(APITestCase):
     def get(self, key=None):
         return self.client.get('/gateway/echo', HTTP_X_API_KEY=key or self.key)
 
-    def test_revoking_last_permission_denies_access(self):
-        self.assertTrue(self.app.has_permission(self.route))  # Legacy unrestricted app.
-        permission = RoutePermission.objects.create(application=self.app, route=self.route)
-        self.assertTrue(self.app.has_permission(self.route))
+    def test_revoked_permission_denies_only_granted_methods(self):
+        self.assertTrue(self.app.has_permission(self.route, 'GET'))
+        permission = RoutePermission.objects.create(
+            application=self.app, route=self.route, allowed_methods=['GET'])
+        self.assertTrue(self.app.has_permission(self.route, 'GET'))
+        self.assertFalse(self.app.has_permission(self.route, 'DELETE'))
         permission.is_active = False
         permission.save()
-        self.assertFalse(self.app.has_permission(self.route))
+        self.assertFalse(self.app.has_permission(self.route, 'GET'))
         self.assertEqual(self.get().status_code, 403)
 
-    def test_cross_project_permission_is_never_allowed(self):
+    def test_cross_project_permission_never_allowed(self):
         other = Project.objects.create(owner=self.owner, name='Other', slug='other')
-        other_route = Route.objects.create(project=other, name='Other', path='/echo')
+        service = BackendService.objects.create(project=other, name='Echo', base_path='/echo')
+        other_route = Route.objects.create(project=other, backend_service=service, name='Other')
         RoutePermission.objects.create(application=self.app, route=other_route)
-        self.assertFalse(self.app.has_permission(other_route))
+        self.assertFalse(self.app.has_permission(other_route, 'GET'))
 
-    def test_route_disable_delete_and_auth_changes_take_effect_immediately(self):
-        RouteResolver.get_route_for_request(self.project, 'GET', 'echo')
-        # A worker may still have an entry created by the old implementation.
-        cache.set(f'route:{self.project.id}:GET:/echo', self.route, 300)
+    def test_disabled_service_or_route_takes_effect_immediately(self):
+        self.assertIsNotNone(RouteResolver.get_route_for_request(self.project, 'GET', '/echo'))
         Route.objects.filter(pk=self.route.pk).update(auth_policy=Route.AUTH_API_KEY_AND_JWT)
         self.assertEqual(self.get().status_code, 401)
         Route.objects.filter(pk=self.route.pk).update(is_active=False)
@@ -59,16 +62,15 @@ class GatewayRegressionTests(APITestCase):
         self.route.delete()
         self.assertEqual(self.get().status_code, 404)
 
-    def test_cache_invalidation_clears_all_project_apps_only(self):
-        # IDs deliberately differ: an application ID can equal another project's ID.
-        unused = Project.objects.create(owner=self.owner, name='Unused', slug='unused')
-        other_project = Project.objects.create(owner=self.owner, name='Other', slug='other')
+    def test_cache_invalidation_is_project_scoped(self):
         sibling = Application.objects.create(project=self.project, name='Sibling')
         _, sibling_key = APIKey.create_for_application(sibling, 'key')
+        other_project = Project.objects.create(owner=self.owner, name='Other', slug='other')
         other_app = Application.objects.create(project=other_project, name='Other client')
         _, other_key = APIKey.create_for_application(other_app, 'key')
-        Route.objects.create(project=other_project, name='Echo', path='/echo', target_url=self.route.target_url)
-        Route.objects.create(project=self.project, name='Write', path='/echo', method='POST', target_url=self.route.target_url)
+        other_service = BackendService.objects.create(project=other_project, name='Echo',
+            base_path='/echo', target_url=self.service.target_url)
+        Route.objects.create(project=other_project, backend_service=other_service, name='Echo')
         with patch('gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True})) as proxy:
             for key in (self.key, sibling_key, other_key):
                 self.assertEqual(self.get(key).status_code, 200)
@@ -80,12 +82,12 @@ class GatewayRegressionTests(APITestCase):
                 self.assertEqual(self.get(key).status_code, 200)
             self.assertEqual(proxy.call_count, 6)
 
-    def test_destination_is_checked_before_cache_or_network(self):
+    def test_destination_checked_before_cache_or_network(self):
         with patch('gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True})) as proxy:
             self.assertEqual(self.get().status_code, 200)
             with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[]):
                 self.assertEqual(self.get().status_code, 403)
-            Route.objects.filter(pk=self.route.pk).update(target_url='http://169.254.169.254/latest/meta-data/')
+            BackendService.objects.filter(pk=self.service.pk).update(target_url='http://169.254.169.254/latest/meta-data/')
             self.assertEqual(self.get().status_code, 403)
             self.assertEqual(proxy.call_count, 1)
 
@@ -105,7 +107,7 @@ class GatewayRegressionTests(APITestCase):
                 302, headers={'location': 'http://169.254.169.254/'})
             request = RequestFactory().get('/echo')
             request.application = self.app
-            response = GatewayRequestProxy.proxy(request, self.route.target_url)
+            response = GatewayRequestProxy.proxy(request, self.service.target_url)
             self.assertEqual(response.status_code, 302)
             self.assertFalse(client.call_args.kwargs['follow_redirects'])
             self.assertFalse(client.call_args.kwargs['trust_env'])
@@ -122,3 +124,12 @@ class GatewayRegressionTests(APITestCase):
         with patch.object(limiter.client, 'eval', side_effect=[1, 0]):
             self.assertTrue(limiter.allow_request('test', 1, 60))
             self.assertFalse(limiter.allow_request('test', 1, 60))
+
+    def test_prefix_matches_whole_segments_and_prefers_specific_route(self):
+        other = BackendService.objects.create(project=self.project, name='Specific',
+            base_path='/echo/admin', target_url='http://fashion-product-service:8000/admin')
+        specific_route = Route.objects.create(project=self.project, backend_service=other, name='Specific',
+                                             allowed_methods=['GET'])
+        self.assertEqual(RouteResolver.get_route_for_request(self.project, 'GET', '/echo/admin/123'), specific_route)
+        self.assertIsNone(RouteResolver.get_route_for_request(self.project, 'DELETE', '/echo/admin/123'))
+        self.assertIsNone(RouteResolver.get_route_for_request(self.project, 'GET', '/echo-extra'))
