@@ -49,12 +49,11 @@ class BaaSIntegrationTests(APITestCase):
     def backend(self, service_name='healthcare-doctor-service'):
         received = []
         class Handler(DummyBackendHandler):
-            service_name = service_name
-
             def _send_response(self):
                 received.append(dict(self.headers))
                 super()._send_response()
 
+        Handler.service_name = service_name
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
