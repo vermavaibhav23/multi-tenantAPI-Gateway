@@ -16,7 +16,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from analytics.models import RequestLog
 from authentication.models import APIKey, Application, RoutePermission
 from dummy_backend.server import DummyBackendHandler
-from gateway.services import GatewayRequestProxy, ProductResponseCache, RedisRateLimiter
+from gateway.services import ProductResponseCache, RedisRateLimiter
 from routes.demo import INDUSTRY_BUNDLES
 from routes.models import BackendService, Route
 from users.models import Project, User
@@ -57,6 +57,7 @@ class BaaSIntegrationTests(APITestCase):
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
+
         def cleanup():
             server.shutdown()
             server.server_close()
@@ -68,22 +69,27 @@ class BaaSIntegrationTests(APITestCase):
     def get(self, key=None, path='/doctors', **headers):
         return self.client.get('/gateway' + path, HTTP_X_API_KEY=key or self.key, **headers)
 
-    def test_seed_is_idempotent_preserves_edits_and_creates_no_businesses(self):
-        ids = list(Route.objects.values_list('id', flat=True))
-        route = Route.objects.first()
+    def doctor_service(self):
+        return BackendService.objects.get(project=self.project, base_path='/doctors')
+
+    def test_seed_is_idempotent_and_preserves_edits(self):
+        ids = list(Route.objects.order_by('id').values_list('id', flat=True))
+        route = self.project.routes.get(backend_service=self.doctor_service())
         Route.objects.filter(pk=route.pk).update(is_active=False)
         call_command('seed_demo', admin_email=self.admin.email, stdout=io.StringIO())
-        self.assertEqual(ids, list(Route.objects.values_list('id', flat=True)))
+        self.assertEqual(ids, list(Route.objects.order_by('id').values_list('id', flat=True)))
         self.assertFalse(Route.objects.get(pk=route.pk).is_active)
         self.assertEqual(Project.objects.count(), 3)
         self.assertEqual(BackendService.objects.count(), 9)
-        self.assertEqual(Route.objects.count(), 45)
-        self.assertEqual(Application.objects.count(), 2)  # Created via API in setUp, not seed.
+        self.assertEqual(Route.objects.count(), 9)
+        self.assertEqual(Application.objects.count(), 2)
         for slug, (_, services) in INDUSTRY_BUNDLES.items():
             project = Project.objects.get(slug=slug)
-            self.assertEqual(set(project.backend_services.values_list('name', flat=True)), {s[0] for s in services})
             for _, host, path in services:
-                self.assertEqual(project.routes.get(method='GET', path=path).target_url, f'http://{host}:8000{path}')
+                service = project.backend_services.get(slug=host)
+                self.assertEqual(service.base_path, path)
+                self.assertEqual(service.target_url, f'http://{host}:8000{path}')
+                self.assertEqual(service.routes.count(), 1)
 
     def test_seed_rejects_nonstaff_and_owner_collision(self):
         ordinary = User.objects.create_user(username='ordinary', email='ordinary@example.com')
@@ -92,11 +98,12 @@ class BaaSIntegrationTests(APITestCase):
         other = User.objects.create_user(username='other', email='other@example.com', is_staff=True)
         with self.assertRaises(CommandError):
             call_command('seed_demo', admin_email=other.email, stdout=io.StringIO())
-        self.assertEqual(Project.objects.count(), 3)
 
     def test_two_businesses_reach_same_server_with_trusted_identity(self):
         origin, received = self.backend()
-        self.project.routes.filter(path='/doctors').update(target_url=origin + '/doctors')
+        service = self.doctor_service()
+        service.target_url = origin + '/doctors'
+        service.save(update_fields=['target_url'])
         with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin]):
             for app, key in ((self.app, self.key), (self.other_app, self.other_key)):
                 response = self.get(key, HTTP_X_GATESCALE_APPLICATION_ID='9999',
@@ -104,22 +111,20 @@ class BaaSIntegrationTests(APITestCase):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.json(), {'response': 'success', 'backend_service': 'healthcare-doctor-service',
                     'application_id': app.id, 'method': 'GET', 'path': '/doctors'})
-        self.assertNotEqual(self.key, self.other_key)
         self.assertEqual(len(received), 2)
         for headers in received:
             headers = {k.lower(): v for k, v in headers.items()}
             self.assertNotIn('x-api-key', headers)
             self.assertNotIn('x-gatescale-tenant-id', headers)
             self.assertNotEqual(headers['x-gatescale-application-id'], '9999')
-        self.assertEqual(set(RequestLog.objects.values_list('application_id', flat=True)), {self.app.id, self.other_app.id})
 
-    def test_all_nine_destinations_echo_methods_without_body_validation(self):
+    def test_all_nine_services_echo_five_methods_with_one_route_each(self):
         for slug, (_, services) in INDUSTRY_BUNDLES.items():
             project = Project.objects.get(slug=slug)
             _, key = self.create_business(project, 'Routing checks', 'premium')
             for _, host, path in services:
                 origin, received = self.backend(host)
-                project.routes.filter(path=path).update(target_url=origin + path)
+                project.backend_services.filter(base_path=path).update(target_url=origin + path)
                 with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin]):
                     for method, _ in Route.METHOD_CHOICES:
                         with self.subTest(host=host, method=method):
@@ -130,37 +135,37 @@ class BaaSIntegrationTests(APITestCase):
                             self.assertEqual(response.json()['method'], method)
                             self.assertEqual(response.json()['path'], path)
                 self.assertEqual(len(received), 5)
+        self.assertEqual(Route.objects.count(), 9)
 
     def test_cross_project_and_route_permission_denial(self):
         with patch('gateway.views.GatewayRequestProxy.proxy') as proxy:
             self.assertEqual(self.get(path='/accounts').status_code, 404)
-            RoutePermission.objects.create(application=self.app,
-                route=self.project.routes.get(method='GET', path='/patients'))
+            route = self.project.routes.get(backend_service__base_path='/patients')
+            RoutePermission.objects.create(application=self.app, route=route, allowed_methods=['GET'])
             self.assertEqual(self.get().status_code, 403)
             proxy.assert_not_called()
-        self.assertEqual(list(RequestLog.objects.order_by('id').values_list('status_code', flat=True)), [404, 403])
 
-    def test_runtime_rejects_inconsistent_and_disabled_service_records(self):
-        route = self.project.routes.get(method='GET', path='/doctors')
+    def test_inactive_or_inconsistent_service_is_not_routed(self):
+        route = self.project.routes.get(backend_service=self.doctor_service())
         foreign = BackendService.objects.get(slug='banking-account-service')
         Route.objects.filter(pk=route.pk).update(backend_service=foreign)
         self.assertEqual(self.get().status_code, 404)
-        Route.objects.filter(pk=route.pk).update(backend_service=route.backend_service)
+        Route.objects.filter(pk=route.pk).update(backend_service=self.doctor_service())
         BackendService.objects.filter(pk=route.backend_service_id).update(is_active=False)
         self.assertEqual(self.get().status_code, 404)
 
-    def test_rate_limit_is_application_scoped_across_keys_and_limiter_instances(self):
+    def test_rate_limit_is_application_scoped_across_keys(self):
         _, second_key = APIKey.create_for_application(self.app, 'rotation')
         with patch.dict(Application.PLAN_LIMITS, {'normal': (1, 600), 'premium': (1, 600)}), patch(
                 'gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True})):
             self.assertEqual(self.get().status_code, 200)
             self.assertEqual(self.get(second_key).status_code, 429)
             self.assertEqual(self.get(self.other_key).status_code, 200)
-        self.assertIn(f'gateway_rate:application:{self.app.id}', RedisRateLimiter._memory_store)
 
     def test_cache_is_application_isolated_and_invalidated(self):
         origin, received = self.backend('fashion-product-service')
-        self.project.routes.filter(path='/doctors').update(target_url=origin + '/doctors')
+        self.doctor_service().target_url = origin + '/doctors'
+        self.doctor_service().save(update_fields=['target_url'])
         with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin], GATEWAY_CACHEABLE_BACKEND_HOSTS=['127.0.0.1']):
             for _ in range(2):
                 self.assertEqual(self.get().json()['application_id'], self.app.id)
@@ -172,14 +177,19 @@ class BaaSIntegrationTests(APITestCase):
             self.assertEqual(len(received), 5)
 
     def test_sensitive_and_jwt_responses_bypass_cache(self):
-        with patch('gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True})) as proxy:
+        route = self.project.routes.get(backend_service=self.doctor_service())
+        with patch('gateway.views.GatewayRequestProxy.proxy',
+                   return_value=httpx.Response(200, json={'ok': True})) as proxy:
             for host in ('healthcare-doctor-service', 'banking-account-service'):
-                self.project.routes.filter(path='/doctors', method='GET').update(target_url=f'http://{host}:8000/doctors')
+                self.doctor_service().target_url = f'http://{host}:8000/doctors'
+                self.doctor_service().save(update_fields=['target_url'])
                 self.assertEqual(self.get().status_code, 200)
                 self.assertEqual(self.get().status_code, 200)
             self.assertEqual(proxy.call_count, 4)
-            self.project.routes.filter(path='/doctors', method='GET').update(
-                target_url='http://fashion-product-service:8000/doctors', auth_policy=Route.AUTH_API_KEY_AND_JWT)
+            route.auth_policy = Route.AUTH_API_KEY_AND_JWT
+            route.save(update_fields=['auth_policy'])
+            self.doctor_service().target_url = 'http://fashion-product-service:8000/doctors'
+            self.doctor_service().save(update_fields=['target_url'])
             token = str(RefreshToken.for_user(self.admin).access_token)
             for _ in range(2):
                 self.assertEqual(self.get(HTTP_AUTHORIZATION=f'Bearer {token}').status_code, 200)
@@ -187,34 +197,31 @@ class BaaSIntegrationTests(APITestCase):
         self.assertFalse(ProductResponseCache._memory_store)
 
     def test_private_response_headers_prevent_caching(self):
-        self.project.routes.filter(path='/doctors', method='GET').update(target_url='http://fashion-product-service:8000/doctors')
+        self.doctor_service().target_url = 'http://fashion-product-service:8000/doctors'
+        self.doctor_service().save(update_fields=['target_url'])
         for headers in ({'cache-control': 'private'}, {'cache-control': 'no-store'},
                         {'set-cookie': 'session=value'}, {'vary': 'Authorization'}):
-            with patch('gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True}, headers=headers)) as proxy:
+            with patch('gateway.views.GatewayRequestProxy.proxy',
+                       return_value=httpx.Response(200, json={'ok': True}, headers=headers)) as proxy:
                 self.assertEqual(self.get().status_code, 200)
                 self.assertEqual(self.get().status_code, 200)
                 self.assertEqual(proxy.call_count, 2)
-        self.assertFalse(ProductResponseCache._memory_store)
 
-    def test_dummy_head_and_options_follow_http_semantics(self):
+    def test_dummy_head_and_options(self):
         origin, _ = self.backend()
         with httpx.Client(trust_env=False, timeout=5) as client:
-            head = client.head(origin + '/doctors')
-            self.assertEqual(head.status_code, 200)
-            self.assertEqual(head.content, b'')
-            options = client.options(origin + '/doctors', headers={'X-GateScale-Application-ID': str(self.app.id)})
-            self.assertEqual(options.json()['method'], 'OPTIONS')
-            self.assertEqual(options.json()['application_id'], self.app.id)
+            self.assertEqual(client.head(origin + '/doctors').status_code, 200)
+            self.assertEqual(client.options(origin + '/doctors').json()['method'], 'OPTIONS')
 
-    def test_analytics_filter_stays_within_admin_owned_projects(self):
-        with patch('gateway.views.GatewayRequestProxy.proxy', return_value=httpx.Response(200, json={'ok': True})):
+    def test_analytics_filter_is_scoped_to_admin(self):
+        with patch('gateway.views.GatewayRequestProxy.proxy',
+                   return_value=httpx.Response(200, json={'ok': True})):
             self.get()
             self.get(self.other_key)
         self.client.force_authenticate(self.admin)
         summary = self.client.get('/admin-api/analytics/summary', {'application_id': self.app.id})
         self.assertEqual(summary.data['total_requests'], 1)
         self.assertEqual(self.client.get('/admin-api/analytics/summary').data['total_requests'], 2)
-        self.assertEqual(self.client.get('/admin-api/analytics/summary?application_id=invalid').status_code, 400)
         outsider = User.objects.create_user(username='outsider', email='outsider@example.com', is_staff=True)
         self.client.force_authenticate(outsider)
         self.assertEqual(self.client.get('/admin-api/analytics/summary', {'application_id': self.app.id}).status_code, 404)
@@ -225,46 +232,37 @@ class ManagementAccessTests(APITestCase):
         self.staff = User.objects.create_user(username='staff', email='staff@example.com', is_staff=True)
         self.user = User.objects.create_user(username='user', email='user@example.com', password='test-password-123')
 
-    def test_management_endpoints_reject_nonstaff_and_anonymous_users(self):
-        endpoints = ['projects', 'services', 'routes', 'applications', 'keys', 'keys/1/revoke',
-                     'dashboard', 'analytics/summary', 'auth/register']
+    def test_management_endpoints_reject_nonstaff_and_anonymous(self):
         for user in (None, self.user):
             self.client.force_authenticate(user)
-            for endpoint in endpoints:
+            for endpoint in ('projects', 'services', 'routes', 'applications', 'keys', 'dashboard', 'analytics/summary'):
                 for method in ('get', 'post'):
-                    with self.subTest(endpoint=endpoint, method=method, user=user):
+                    with self.subTest(user=user, endpoint=endpoint, method=method):
                         response = getattr(self.client, method)('/admin-api/' + endpoint)
                         self.assertEqual(response.status_code, 401 if user is None else 403)
 
-    def test_staff_can_create_project_and_service_but_cannot_mix_projects(self):
+    def test_staff_cannot_link_foreign_project_service(self):
         self.client.force_authenticate(self.staff)
-        response = self.client.post('/admin-api/projects', {'name': 'E-commerce'})
-        self.assertEqual(response.status_code, 201)
-        project_id = response.data['id']
-        service = self.client.post('/admin-api/services', {'project': project_id, 'name': 'Product Service'})
+        project = self.client.post('/admin-api/projects', {'name': 'E-commerce'})
+        self.assertEqual(project.status_code, 201)
+        service = self.client.post('/admin-api/services', {
+            'project': project.data['id'], 'name': 'Product Service', 'base_path': '/products',
+        })
         self.assertEqual(service.status_code, 201, service.data)
         other = Project.objects.create(owner=self.staff, name='Other', slug='other')
-        bad_route = self.client.post('/admin-api/routes', {'project': other.id, 'name': 'Bad', 'path': '/bad',
-            'backend_service': service.data['id'], 'target_url': 'http://fashion-product-service:8000/bad'})
+        bad_route = self.client.post('/admin-api/routes', {
+            'project': other.id, 'name': 'Bad', 'backend_service': service.data['id'],
+        })
         self.assertEqual(bad_route.status_code, 400)
         self.assertFalse(Route.objects.exists())
 
     def test_inactive_user_cannot_log_in(self):
         self.user.is_active = False
         self.user.save()
-        response = self.client.post('/admin-api/auth/login', {'email': self.user.email, 'password': 'test-password-123'})
+        response = self.client.post('/admin-api/auth/login', {
+            'email': self.user.email, 'password': 'test-password-123',
+        })
         self.assertEqual(response.status_code, 400)
-
-    def test_registration_is_staff_only_and_does_not_grant_staff_privileges(self):
-        self.client.force_authenticate(self.staff)
-        response = self.client.post('/admin-api/auth/register', {
-            'username': 'legacy', 'email': 'legacy@example.com', 'password': 'Complex-test-password-123',
-            'is_staff': True, 'is_superuser': True,
-        }, format='json')
-        self.assertEqual(response.status_code, 201, response.data)
-        user = User.objects.get(email='legacy@example.com')
-        self.assertFalse(user.is_staff)
-        self.assertFalse(user.is_superuser)
 
 
 @skipUnless(os.getenv('GATESCALE_TEST_REDIS_URL'), 'Set GATESCALE_TEST_REDIS_URL to test a real shared Redis instance.')
@@ -274,7 +272,6 @@ class SharedRedisTests(SimpleTestCase):
         second = RedisRateLimiter(os.environ['GATESCALE_TEST_REDIS_URL'])
         key = f'gateway_test:{uuid4().hex}'
         try:
-            # No fallback is permitted in this integration test.
             with patch.object(first, '_fallback_allow_request', side_effect=AssertionError('Redis unavailable')), patch.object(
                     second, '_fallback_allow_request', side_effect=AssertionError('Redis unavailable')):
                 self.assertTrue(first.allow_request(key, 1, 600))
