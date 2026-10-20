@@ -1,42 +1,131 @@
+from django.db import IntegrityError, transaction
 from django.test import override_settings
 from rest_framework.test import APITestCase
 
-from routes.models import BackendService, Route
+from routes.models import BackendService, Route, RouteMethod
 from users.models import Project, User
 
 
 @override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=['http://fashion-product-service:8000'])
-class RouteCreationRegressionTests(APITestCase):
+class RouteCreationTests(APITestCase):
     def setUp(self):
-        owner = User.objects.create_user(username='owner', is_staff=True, email='owner@example.com')
-        self.project = Project.objects.create(owner=owner, name='Project', slug='project')
-        self.client.force_authenticate(owner)
+        self.owner = User.objects.create_user(
+            username='owner', is_staff=True, email='owner@example.com'
+        )
+        self.project = Project.objects.create(owner=self.owner, name='Project', slug='project')
+        self.client.force_authenticate(self.owner)
 
-    def test_named_service_and_docker_url_create_route(self):
+    def add_route(self, path='/products', method='GET', auth_policy='api_key_only'):
+        service = BackendService.objects.create(
+            project=self.project, name='Product Service', slug='product-service'
+        )
         response = self.client.post('/admin-api/routes', {
-            'project': self.project.id, 'name': 'Echo', 'path': '/echo',
-            'backend_service_name': 'Product Service', 'backend_service_slug': 'product-service',
+            'project': self.project.id, 'name': 'Products',
+            'base_path': path, 'backend_service': service.id,
             'target_url': 'http://fashion-product-service:8000/products',
         }, format='json')
         self.assertEqual(response.status_code, 201, response.data)
         route = Route.objects.get()
-        self.assertEqual(route.backend_service.name, 'Product Service')
-        self.assertEqual(route.backend_service.slug, 'product-service')
-        self.assertEqual(route.backend_service.project, self.project)
+        policy = self.client.post('/admin-api/route-methods', {
+            'route': route.id, 'method': method, 'auth_policy': auth_policy,
+        }, format='json')
+        self.assertEqual(policy.status_code, 201, policy.data)
+        return route
 
-    def test_unapproved_destination_rejected_without_service_side_effect(self):
+    def test_route_and_method_policy_created_separately(self):
+        route = self.add_route()
+        self.assertEqual(route.base_path, '/products')
+        self.assertEqual(route.backend_service.name, 'Product Service')
+        self.assertEqual(RouteMethod.objects.get(route=route).method, 'GET')
+        self.assertEqual(Route.objects.count(), 1)
+
+    def test_multiple_methods_share_one_route(self):
+        route = self.add_route()
+        response = self.client.post('/admin-api/route-methods', {
+            'route': route.id, 'method': 'POST', 'auth_policy': 'api_key_and_jwt',
+        }, format='json')
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(route.method_policies.count(), 2)
+        self.assertEqual(Route.objects.count(), 1)
+        duplicate = self.client.post('/admin-api/route-methods', {
+            'route': route.id, 'method': 'POST',
+        }, format='json')
+        self.assertEqual(duplicate.status_code, 400)
+
+    def test_duplicate_base_path_fails_even_with_another_service(self):
+        route = self.add_route()
+        other = BackendService.objects.create(
+            project=self.project, name='Other Service', slug='other-service'
+        )
         response = self.client.post('/admin-api/routes', {
-            'project': self.project.id, 'name': 'Blocked', 'path': '/meta',
-            'backend_service_name': 'Blocked', 'target_url': 'http://169.254.169.254/latest/meta-data/',
+            'project': self.project.id, 'name': 'Duplicate',
+            'base_path': '/products', 'backend_service': other.id,
+        }, format='json')
+        self.assertEqual(response.status_code, 400)
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            Route.objects.create(
+                project=self.project, backend_service=other,
+                name='Duplicate', base_path='/products',
+            )
+
+    def test_service_can_have_multiple_paths(self):
+        route = self.add_route()
+        response = self.client.post('/admin-api/routes', {
+            'project': self.project.id, 'name': 'Catalog',
+            'base_path': '/catalog', 'backend_service': route.backend_service_id,
+            'target_url': 'http://fashion-product-service:8000/catalog',
+        }, format='json')
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(Route.objects.filter(backend_service=route.backend_service).count(), 2)
+
+    def test_cross_project_service_or_policy_rejected(self):
+        route = self.add_route()
+        other_owner = User.objects.create_user(
+            username='other', is_staff=True, email='other@example.com'
+        )
+        self.client.force_authenticate(other_owner)
+        bad = self.client.post('/admin-api/route-methods', {
+            'route': route.id, 'method': 'DELETE',
+        }, format='json')
+        self.assertEqual(bad.status_code, 400)
+        foreign_project = Project.objects.create(
+            owner=other_owner, name='Foreign', slug='foreign'
+        )
+        foreign_service = BackendService.objects.create(
+            project=foreign_project, name='Foreign Service'
+        )
+        self.client.force_authenticate(self.owner)
+        bad = self.client.post('/admin-api/routes', {
+            'project': self.project.id, 'name': 'Foreign',
+            'base_path': '/foreign', 'backend_service': foreign_service.id,
+        }, format='json')
+        self.assertEqual(bad.status_code, 400)
+
+    def test_destination_validation_happens_before_creating_service(self):
+        response = self.client.post('/admin-api/routes', {
+            'project': self.project.id, 'name': 'Blocked',
+            'base_path': '/meta', 'backend_service_name': 'Blocked',
+            'target_url': 'http://169.254.169.254/latest/meta-data/',
         }, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertFalse(Route.objects.exists())
         self.assertFalse(BackendService.objects.exists())
 
-    def test_existing_service_and_empty_target_remain_supported(self):
-        service = BackendService.objects.create(project=self.project, name='Existing')
-        response = self.client.post('/admin-api/routes', {
-            'project': self.project.id, 'name': 'Empty', 'path': '/empty', 'backend_service': service.id,
-        }, format='json')
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(Route.objects.get().backend_service, service)
+    def test_unique_backend_service_name_within_project(self):
+        BackendService.objects.create(
+            project=self.project, name='Doctor Service', slug='doctor-one'
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            BackendService.objects.create(
+                project=self.project, name='Doctor Service', slug='doctor-two'
+            )
+
+    def test_invalid_base_paths_rejected(self):
+        service = BackendService.objects.create(project=self.project, name='Doctor')
+        for bad_path in ('doctors', '/doctors/', '//doctors', '/x/../admin', '/x?y=2'):
+            with self.subTest(path=bad_path):
+                response = self.client.post('/admin-api/routes', {
+                    'project': self.project.id, 'name': 'Bad',
+                    'base_path': bad_path, 'backend_service': service.id,
+                }, format='json')
+                self.assertEqual(response.status_code, 400)
