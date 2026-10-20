@@ -70,6 +70,94 @@ class ClientUserAuthenticationTests(APITestCase):
         return self.client.get('/gateway/doctors/456', HTTP_X_API_KEY=key,
                                HTTP_AUTHORIZATION='Bearer ' + access)
 
+    def _register(self, key=None, email='newpatient@example.com',
+                  password='StrongPatientPassword123!', **extra):
+        payload = {'email': email, 'password': password, **extra}
+        return self.client.post(
+            '/gateway/auth/register', payload,
+            format='json', HTTP_X_API_KEY=key or self.key_a,
+        )
+
+    def test_self_register_then_login_and_access_protected_route(self):
+        registered = self._register()
+        self.assertEqual(registered.status_code, 201, registered.data)
+        self.assertEqual(registered.data['application'], self.app_a.id)
+        self.assertEqual(registered.data['email'], 'newpatient@example.com')
+        self.assertTrue(registered.data['is_active'])
+        self.assertNotIn('access', registered.data)
+        self.assertNotIn('refresh', registered.data)
+        self.assertNotIn('password', registered.data)
+        self.assertNotIn('password_hash', registered.data)
+
+        user = ApplicationUser.objects.get(pk=registered.data['id'])
+        self.assertTrue(user.check_password('StrongPatientPassword123!'))
+        self.assertNotEqual(user.password_hash, 'StrongPatientPassword123!')
+        login = self._login(
+            self.key_a, email='newpatient@example.com', password='StrongPatientPassword123!'
+        )
+        self.assertEqual(login.status_code, 200, login.data)
+        with patch('gateway.views.GatewayRequestProxy.proxy',
+                   return_value=httpx.Response(200, json={'ok': True})):
+            self.assertEqual(
+                self._protected(self.key_a, login.data['access']).status_code, 200
+            )
+
+    def test_register_rejects_missing_invalid_or_revoked_application_api_key(self):
+        data = {'email': 'newpatient@example.com', 'password': 'StrongPatientPassword123!'}
+        self.assertEqual(self.client.post('/gateway/auth/register', data, format='json').status_code, 401)
+        self.assertEqual(
+            self.client.post('/gateway/auth/register', data, format='json',
+                             HTTP_X_API_KEY='not-a-key').status_code, 401
+        )
+        self.app_a.is_active = False
+        self.app_a.save(update_fields=['is_active'])
+        self.assertEqual(self._register().status_code, 401)
+        self.assertFalse(ApplicationUser.objects.filter(email='newpatient@example.com').exists())
+
+    def test_registration_uses_api_key_context_not_user_chosen_application_or_role(self):
+        for injected in (
+            {'application': self.app_b.pk}, {'application_id': self.app_b.pk},
+            {'role': 'admin'}, {'is_active': True}, {'permissions': ['doctors:delete']},
+        ):
+            with self.subTest(payload=injected):
+                response = self._register(**injected)
+                self.assertEqual(response.status_code, 400, response.data)
+        self.assertFalse(ApplicationUser.objects.filter(
+            application=self.app_a, email='newpatient@example.com'
+        ).exists())
+
+    def test_registration_rejects_duplicate_within_app_but_isolates_other_app(self):
+        first = self._register(email='NewPatient@Example.Com')
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(first.data['email'], 'newpatient@example.com')
+        duplicate = self._register(email='newpatient@example.com')
+        self.assertEqual(duplicate.status_code, 400)
+        other = self._register(key=self.key_b, email='newpatient@example.com')
+        self.assertEqual(other.status_code, 201, other.data)
+        self.assertNotEqual(first.data['id'], other.data['id'])
+        self.assertEqual(ApplicationUser.objects.filter(
+            email='newpatient@example.com'
+        ).count(), 2)
+        self.assertEqual(self._login(self.key_a, email='newpatient@example.com',
+                                     password='StrongPatientPassword123!').status_code, 200)
+
+    def test_registration_password_validation_and_shape(self):
+        for password in ('12345678', 'password', 'short'):
+            with self.subTest(password=password):
+                self.assertEqual(self._register(password=password).status_code, 400)
+        self.assertEqual(self._register(email='invalid-email').status_code, 400)
+        self.assertFalse(ApplicationUser.objects.filter(email='newpatient@example.com').exists())
+
+    def test_registration_rate_limit(self):
+        for n in range(5):
+            result = self._register(email='newpatient@example.com', password='weak')
+            self.assertEqual(result.status_code, 400)
+        # Validation errors are rejected before the attempt counter.
+        self.assertEqual(self._register().status_code, 201)
+        for n in range(4):
+            self.assertEqual(self._register().status_code, 400)
+        self.assertEqual(self._register().status_code, 429)
+
     def test_app_user_is_not_a_platform_user_and_password_is_hashed(self):
         self.assertNotEqual(self.client_user_a.password_hash, self.password)
         self.assertTrue(self.client_user_a.check_password(self.password))
