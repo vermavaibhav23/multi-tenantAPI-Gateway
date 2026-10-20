@@ -1,258 +1,135 @@
-# ServLink — Multi-Tenant Backend-as-a-Service (BaaS) Platform
+# ServLink — Multi-Tenant Backend-as-a-Service API Gateway
 
-**A shared backend services platform powered by a multi-tenant API Gateway.**
+ServLink is a Django REST Framework gateway that lets business applications share domain-specific demo microservices (Healthcare, Banking, E-commerce). It uses API keys to identify applications, Redis token-bucket rate limiting, optional JWT verification on configured HTTP methods, safe GET caching, request analytics, and NGINX across three gateway replicas.
 
-Small businesses often have limited development teams and budgets. ServLink explores a way for multiple businesses to access reusable, industry-specific backend services through one central platform, rather than each business building the same infrastructure from scratch.
+**Scope:** The Docker backend services are intentionally dummy request-echo servers. They do not implement real patients, bookings, payments or a client-user identity provider.
 
-At the heart of ServLink is a **Django REST Framework API Gateway**. It identifies each business through an API key, routes requests to services in its industry project, enforces permissions and subscription-plan rate limits, applies safe response caching, and records request analytics.
+## Data model (routing schema)
 
-### What the platform demonstrates
+| Table | Key fields | Uniqueness |
+|---|---|---|
+| Project | id, owner (ServLink staff User), name, slug | `name`; `slug` |
+| Application | id, project, name, slug, plan, is_active | `(project, slug)` |
+| APIKey | id, application (1:1), key_hash, expires_at, revoked_at | `key_hash`; `application` |
+| BackendService | id, project, name, slug, is_active | `(project, name)`; `(project, slug)` |
+| Route | id, project, backend_service, base_path, target_url, is_active | `(project, base_path)` |
+| RouteMethod | id, route, method, auth_policy | `(route, method)` |
+| RoutePermission | id, application, route, is_active | `(application, route)` |
+| RequestLog | project, application, route, method, status, latency, etc. | analytics/history |
 
-| Area | Implementation |
+`BackendService → Route` is 1:N: one DoctorService can expose `/doctors` and `/specialties`, each with its own Route and backend URL. `Route → RouteMethod` is 1:N: one `/doctors` Route can expose GET (API key only) and DELETE (API key plus JWT) with independent policies. All routes in the same project must have distinct public base paths.
+
+Existing `slug`, timestamp, description and key revocation fields are retained for compatibility even where omitted from the compact ER diagram. `Application → APIKey` is one-to-one: issuing a replacement key rotates the stored hash, invalidating the previous value.
+
+**Important distinction:** RoutePermission grants application-level access to a whole route, not a user-level role. No matching RoutePermission rows means the application can access its project's routes by default; once any permissions exist for that application, only active grants allow access. RouteMethod controls HTTP method availability and basic JWT verification. Tenant-scoped client-user JWTs and RBAC are future enhancements.
+
+## Gateway request flow
+
+1. The `X-API-Key` is hashed and looked up in APIKey, identifying the Application and its Project. No caller-provided project/tenant ID is trusted for routing.
+2. Match the most specific, full-segment `Route.base_path` in that project. `/doctors` matches `/doctors/456` but not `/doctors-extra`.
+3. Look up `RouteMethod(route, request.method)`. If absent, return 405 without trying another prefix. If its `auth_policy` is `api_key_and_jwt`, verify a bearer token.
+4. Apply RoutePermission (if present), per-Application Redis token-bucket rate limit, safe GET cache rules and backend destination-origin allowlist.
+5. Forward the request's original HTTP method, body and query string to `Route.target_url + unmatched path suffix`. Remove caller-supplied identity headers and attach verified `X-GateScale-Application-ID`.
+6. Return the downstream status/body and record RequestLog analytics.
+
+Example: `GET /gateway/doctors/456` with Hospital A's API key and a Route mapping `/doctors` to `http://healthcare-doctor-service:8000/doctors` is sent to `http://healthcare-doctor-service:8000/doctors/456`.
+
+## Administrator REST endpoints
+
+Admin APIs use a valid ServLink staff JWT, obtained from `POST /admin-api/auth/login`. Administrator accounts are not end users of client applications.
+
+| Endpoint | Purpose |
 |---|---|
-| **Shared service bundles** | E-commerce, Healthcare and Banking projects, each grouping three demo backend services |
-| **Multi-tenancy** | Multiple business applications share a project's services while retaining distinct API keys, rate limits and analytics |
-| **Gateway functionality** | API-key authentication, optional JWT policies, dynamic routing, route permissions and request forwarding |
-| **Performance** | Redis Lua-based token-bucket rate limiting and 60-second caching of eligible GET responses |
-| **Scalability** | NGINX round-robin load balancing across three Dockerized Django gateway instances |
-| **Persistent data** | MySQL for projects, applications, service/route configuration and request logs |
+| `POST /admin-api/auth/login` | Staff login; returns access + refresh JWTs |
+| `POST /admin-api/auth/refresh` | Refresh staff access JWT |
+| `POST /admin-api/auth/register` | Staff-only creation of a nonstaff Django user |
+| `GET/POST /admin-api/projects` | List or create projects |
+| `GET/POST /admin-api/services` | List or register BackendServices |
+| `GET/POST /admin-api/routes` | List or create project base-path Route mappings |
+| `GET/POST /admin-api/route-methods` | List or create HTTP method + JWT policy per Route |
+| `GET/POST /admin-api/applications` | List or register business applications (creates first API key) |
+| `POST /admin-api/keys` | Rotate application's only API key, returning the new secret once |
+| `POST /admin-api/keys/<id>/revoke` | Revoke application API key |
+| `GET /admin-api/dashboard` | Owner-scoped project summary |
+| `GET /admin-api/analytics/summary` | Owner-scoped request statistics (optional `application_id`) |
 
-**Technology stack:** Python, Django REST Framework, MySQL, Redis, NGINX, Docker / Docker Compose, HTTPX, JWT.
+Example creation (use IDs returned by your server):
 
-**Important scope note:** ServLink is an **architectural demonstration**, not a production-ready BaaS product. Its Dockerized backend microservices are lightweight request-echo services that confirm the service name, application ID, HTTP method and path. They do **not** implement real CRUD, product inventories, patient records, scheduling, or payments. This keeps the project focused on the API Gateway, shared infrastructure, routing and tenant isolation.
+```http
+POST /admin-api/routes
+Authorization: Bearer <staff_access_jwt>
+Content-Type: application/json
 
-### Example use case
-
-Hospital A and Clinic B are separate **Applications** under the **Healthcare Project**. Each has its own API key and plan, but both call `GET /gateway/doctors` and reach the **same running Doctor Service** container. The gateway identifies the correct business, enforces its limits and forwards the request. The dummy service simply echoes which backend received it.
-
-## Data model and tenant boundary
-
-The existing tables and foreign keys are unchanged; this enhancement adds no migrations.
-
-| Entity | Meaning |
-|---|---|
-| User | ServLink administrator (`is_staff=True`); owner of platform configuration |
-| Project | Industry bundle of reusable backend services |
-| Application | Subscribing business belonging to exactly one project |
-| APIKey | Hashed credential identifying one application; multiple keys share its plan limit |
-| BackendService | Logical service registration inside a project |
-| Route | Project-owned HTTP method/path mapping to one approved `target_url` |
-| RoutePermission | Optional application-specific restriction on project routes |
-| RequestLog | Existing project/application/key/route request analytics |
-
-```text
-User → Project → Application → APIKey
-          │           └──────→ RoutePermission → Route
-          └──→ BackendService ─────────────────→ Route
+{"project":10,"name":"Doctor API","backend_service":201,"base_path":"/doctors","target_url":"http://healthcare-doctor-service:8000/doctors"}
 ```
 
-Projects also directly own their routes. Multiple businesses share the same project's routes and service records. Applications do not create additional backend containers. Existing owner scoping remains: a staff administrator manages their own projects, not another administrator's configuration.
+Then separately configure the route's methods:
 
-## Architecture and request flow
+```http
+POST /admin-api/route-methods
+Authorization: Bearer <staff_access_jwt>
+Content-Type: application/json
 
-```text
-Hospital A (Application 4, API key A) ─┐
-                                    ├→ NGINX :8000 → gateway-1 / gateway-2 / gateway-3
-Clinic B (Application 5, API key B) ──┘                        │
-                                    shared MySQL ←───────────┤
-                                    shared Redis ←───────────┤
-                                                             └→ one Doctor Service container
+{"route":301,"method":"GET","auth_policy":"api_key_only"}
 ```
 
-1. Middleware validates `X-API-Key`, expiry/revocation and application activity.
-2. The key determines the Application and its Project. Caller-supplied tenant IDs do not select a project.
-3. The gateway resolves the project's active route by method and path, checking optional route permissions and JWT policy.
-4. Redis atomically applies the business's token bucket, keyed by `gateway_rate:application:<id>`.
-5. The gateway validates the configured backend origin, then checks cache only when eligible.
-6. It removes `X-API-Key`, spoofed `X-GateScale-*` headers, and hop-by-hop headers, then inserts `X-GateScale-Application-ID` from the validated application.
-7. The shared dummy service returns its name, application ID, method and path. The gateway records the request using the existing MySQL analytics model.
+```http
+POST /admin-api/route-methods
+Authorization: Bearer <staff_access_jwt>
+Content-Type: application/json
 
-NGINX retains round-robin balancing across three gateways. All gateways use the same MySQL and Redis. The backends have no databases. Docker backend ports are exposed only on the Compose network, not published to the host. Direct backend callers are not authenticated by the dummy itself: the identity header is trusted only behind the gateway on this internal network.
+{"route":301,"method":"DELETE","auth_policy":"api_key_and_jwt"}
+```
 
-## Industry bundles
+A new Route with no RouteMethod records is not callable. The demo seeder populates the five supported methods automatically. Admin APIs expose create/list, not general update/delete for all entities; Django admin or a future management API is needed to edit existing policies.
 
-`seed_demo` creates these records with API-key-only routes:
-
-| Project slug | BackendService | Shared Docker destination | Example path |
-|---|---|---|---|
-| ecommerce | User Service | fashion-user-service:8000 | /users |
-| ecommerce | Product Service | fashion-product-service:8000 | /products |
-| ecommerce | Order Service | fashion-order-service:8000 | /orders |
-| healthcare | Doctor Service | healthcare-doctor-service:8000 | /doctors |
-| healthcare | Appointment Service | healthcare-appointment-service:8000 | /appointments |
-| healthcare | Patient Service | healthcare-patient-service:8000 | /patients |
-| banking | Account Service | banking-account-service:8000 | /accounts |
-| banking | Transaction Service | banking-transaction-service:8000 | /transactions |
-| banking | Payment Service | banking-payment-service:8000 | /payments |
-
-The existing `fashion-*` names are retained for compatibility. The legacy `banking-user-service` container remains available for old routes, but is not part of the Banking demo bundle. Four containers are added, independent of how many businesses subscribe.
-
-Each bundle has 3 services × the 5 existing route methods (`GET`, `POST`, `PUT`, `PATCH`, `DELETE`): **9 services and 45 routes** across the demo. The dummy server also handles `HEAD` (no response body) and `OPTIONS`; the gateway's configurable method choices remain unchanged. No request body format is required.
-
-## Local development
-
-Python 3.12+:
+## Demo setup
 
 ```bash
 python -m venv .venv
-# Linux/macOS: source .venv/bin/activate
-# PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python manage.py migrate
 python manage.py createsuperuser
 python manage.py seed_demo --admin-email admin@example.com
-python manage.py runserver 0.0.0.0:8000
+python manage.py test authentication users routes gateway analytics
 ```
 
-Use the email entered during `createsuperuser`. The command requires an existing active staff user, never creates credentials, and refuses to take over another administrator's projects. Re-running it creates only missing demo records; it preserves existing routes, disabled services, authentication policies and applications. It does not create businesses or API keys.
-
-Local Python execution defaults to SQLite. Seeded URLs use Docker DNS names, so use Compose for the full demo. To test a local dummy instead, run it on a separate port, approve that origin, and create a custom route through the existing API. Export environment variables in your shell; Django does not automatically read `.env`.
-
-## Docker demo
+Or run the full multi-container environment:
 
 ```bash
 cp .env.example .env
-# PowerShell equivalent: Copy-Item .env.example .env
-# Start Docker Desktop / Docker Engine first.
 docker compose up --build -d
 docker compose exec api-gateway-1 python manage.py createsuperuser
 docker compose exec api-gateway-1 python manage.py seed_demo --admin-email admin@example.com
 ```
 
-The migration container waits for MySQL to accept TCP connections. The three gateways wait for migrations. PyMySQL is registered as the MySQL driver, with its RSA authentication dependency for MySQL 8. The public gateway is `http://localhost:8000`.
+`seed_demo` creates three industry projects, nine backend services, **nine Routes** and **45 RouteMethod records** (GET/POST/PUT/PATCH/DELETE for each). It preserves existing route and method configurations when re-run. Healthcare prefixes: `/doctors`, `/appointments`, `/patients`; E-commerce: `/users`, `/products`, `/orders`; Banking: `/accounts`, `/transactions`, `/payments`.
 
-## Administrator APIs and business creation
+The public gateway is normally `http://localhost:8000`. The downstream demo servers listen on private Compose networks. Only operator-approved backend origins can be used; never expose internal dummy backends directly to untrusted callers.
 
-Login/refresh remain available; management endpoints require an authenticated, active staff user. Public self-registration is closed: `/admin-api/auth/register` is staff-only and creates nonstaff accounts for legacy JWT testing, never staff accounts. Bootstrap administrators with `createsuperuser`; business subscribers are Applications, not User records.
+## Migration from method-specific Routes
 
-```http
-POST /admin-api/auth/login
-Content-Type: application/json
+**Back up MySQL/SQLite before applying these migrations.** The new migration collapses old GET/POST/PUT/PATCH/DELETE Route rows with the same project and base path into a single Route and creates RouteMethod records for enabled methods, keeping each former method's JWT policy. It redirects RequestLog references to the surviving Route.
 
-{"email":"admin@example.com","password":"<your password>"}
-```
+To avoid silent access widening, it intentionally fails if previously method-specific RoutePermission grants would become broader, or if old route records for one base path point to different destinations/backend services. Review and normalize those cases manually first. Project names and service names must also become unique as described above.
 
-Use the returned access token as `Authorization: Bearer <admin_access_token>` for:
+The APIKey migration intentionally fails if more than one key exists for an application; remove excess keys deliberately first. After migration, `POST /admin-api/keys` rotates the application's single key **in place**, invalidating the old secret immediately. Coordinate key rotation with the calling backend.
 
-```text
-GET/POST /admin-api/projects
-GET/POST /admin-api/services
-GET/POST /admin-api/routes
-GET/POST /admin-api/applications
-POST     /admin-api/keys
-POST     /admin-api/keys/<id>/revoke
-GET      /admin-api/dashboard
-GET      /admin-api/analytics/summary
-```
+These data transformations are not designed to be automatically reversed. Do not deploy an older gateway binary against the new schema.
 
-Read `GET /admin-api/projects` for actual IDs, then create businesses via `POST /admin-api/applications`:
+## Authentication and future enhancements
 
-```json
-{"project": 2, "name": "Hospital A", "plan": "premium"}
-```
+Staff JWTs are issued using Django SimpleJWT for ServLink's platform `User` accounts. The current `api_key_and_jwt` policy verifies those platform-issued tokens; it **does not authenticate or authorize Hospital A's doctors or patients**. For real end-user operations, a future shared AuthService would issue application-bound customer JWTs and the gateway would compare the client JWT's tenant/application context and required scopes. Resource ownership checks would remain inside business microservices. Do not expose real sensitive operations relying on the current platform JWT check alone.
 
-```json
-{"project": 2, "name": "Clinic B", "plan": "normal"}
-```
+Current token-bucket limits: normal 100 and premium 1,000 requests per 60 seconds (continuous refill). Redis failures use a per-process fallback, which is not globally consistent. GET response caching is permitted only for explicitly approved non-sensitive backend hosts and cacheable responses. Analytics remain MySQL-backed.
 
-Both use the Healthcare project ID (replace `2` with its actual ID). Each response includes an independent `api_key.key`; retain it securely because only the hash is stored. Suggested additional applications are Fashion Store A (`normal`), Fashion Store B (`premium`), Bank A (`premium`), and Finance App B (`normal`), under the corresponding projects. Nonstaff accounts cannot create applications or assign plans.
-
-## Shared-service demonstration
+## Validation
 
 ```bash
-curl http://localhost:8000/gateway/doctors -H "X-API-Key: <hospital_key>"
-curl http://localhost:8000/gateway/doctors -H "X-API-Key: <clinic_key>"
-curl -X POST http://localhost:8000/gateway/doctors -H "X-API-Key: <hospital_key>" --data 'any body'
-```
-
-The first two requests reach the same container and return different application IDs:
-
-```json
-{"response":"success","backend_service":"healthcare-doctor-service","application_id":4,"method":"GET","path":"/doctors"}
-```
-
-```json
-{"response":"success","backend_service":"healthcare-doctor-service","application_id":5,"method":"GET","path":"/doctors"}
-```
-
-Adding `X-GateScale-Application-ID: 9999` cannot impersonate another business; the gateway replaces it. Missing, invalid, expired or revoked API keys return 401. A Healthcare key cannot resolve Banking-only `/accounts` routes. Optional `RoutePermission` records further restrict an application; once records exist, only active matching permissions grant access. With no records, the business may access its project's routes.
-
-The existing `api_key_and_jwt` route policy still validates a bearer token in addition to the key. This JWT system uses the platform's User table and is **not a complete customer-identity solution for unrelated businesses**. The primary multi-business demo uses API-key-only routes.
-
-## Dynamic routing and security
-
-Create an approved custom route with `POST /admin-api/routes`:
-
-```json
-{
-  "project": 2,
-  "name": "Doctor routing test",
-  "backend_service_name": "Doctor Service",
-  "backend_service_slug": "healthcare-doctor-service",
-  "method": "GET",
-  "path": "/doctor-test",
-  "target_url": "http://healthcare-doctor-service:8000/doctors",
-  "auth_policy": "api_key_only"
-}
-```
-
-An existing `backend_service` ID may be supplied instead. It must be active and belong to the same project. Cross-project associations are rejected. Runtime resolution also rejects inconsistent or inactive service associations from direct database edits. The existing method/path prefix routing and management APIs remain in place; route state is read from MySQL on each request so changes are not hidden by stale per-worker route caches.
-
-Only exact origins in `GATEWAY_ALLOWED_BACKEND_ORIGINS` may be proxied. Defaults are the Docker dummy services, including the retained legacy service. Custom origin configuration replaces that list; an empty list denies all destinations. Both route creation and forwarding validate it. Metadata addresses, unknown hosts, changed ports, credentials in URLs and non-HTTP schemes are rejected. Redirects are not followed; HTTP environment proxy settings are ignored. Only approve operator-controlled hosts and DNS; network egress restrictions remain a deployment responsibility.
-
-## Rate limiting and caching
-
-The unchanged Redis Lua token bucket provides Normal = 100 and Premium = 1000 requests/minute. These are bucket capacities with continuous refill. All API keys belonging to an application share its bucket across gateway instances; different applications have separate buckets. Exhaustion returns 429.
-
-Redis failures retain the existing in-memory fallback. It is **per process**, so limits and cache invalidation are not globally consistent during an outage. Redis is required for the shared-state demonstration; this fallback is not a production failover strategy.
-
-Eligible successful JSON GET responses retain a 60-second TTL. Keys contain Project ID, Application ID, authenticated-user identity and the final URL/query string. Mutating requests invalidate the project's cached responses across applications; this is intentionally broad and never touches another project's namespace.
-
-Caching is conservative:
-
-- Only hosts explicitly listed in `GATEWAY_CACHEABLE_BACKEND_HOSTS` are eligible (default: the three `fashion-*` dummy hosts).
-- Healthcare and Banking backends are not cached by default.
-- JWT-protected routes, requests carrying Authorization/Cookie, and responses with Set-Cookie, Vary, private/no-store/no-cache directives are not cached.
-- Only HTTP 200 JSON responses are cached, preventing cached status changes.
-
-Both settings can be supplied via the shell or Compose `.env`, and require gateway restart. Do not opt sensitive backends into caching merely to increase hit rate.
-
-## Analytics
-
-The existing RequestLog table retains project, application, API key, route/service, method, response status, latency and timestamp. Cache hits and gateway rejections after API-key identification are logged too. Staff can inspect all owned-project traffic or one business:
-
-```http
-GET /admin-api/analytics/summary?application_id=4
-Authorization: Bearer <admin_access_token>
-```
-
-An unknown or another administrator's application returns 404; malformed filters return 400. Logs remain synchronous. Requests rejected before API-key identification cannot be attributed to a business; the summary is not a complete access/security audit log.
-
-## Tests and validation
-
-```bash
-python manage.py test authentication users routes gateway analytics
 python manage.py check
 python manage.py makemigrations --check --dry-run
+python manage.py test authentication users routes gateway analytics
 docker compose config --quiet
 ```
 
-Tests exercise admin-only APIs, seed idempotency, all nine dummy destinations, two businesses sharing one real local HTTP server, spoofed identity headers, API-key stripping, cross-project denial, route permissions, application-scoped limits, isolated caches, invalidation, sensitive-cache bypass, analytics filters, and existing authentication/routing behavior.
-
-An optional integration test runs the actual Lua script through two independent clients against shared Redis. It uses a unique test key and deletes only that key:
-
-```bash
-# Linux/macOS:
-GATESCALE_TEST_REDIS_URL=redis://127.0.0.1:6379/15 python manage.py test gateway.test_baas.SharedRedisTests
-# PowerShell:
-# $env:GATESCALE_TEST_REDIS_URL='redis://127.0.0.1:6379/15'
-# python manage.py test gateway.test_baas.SharedRedisTests
-```
-
-Without this variable the shared-Redis test is explicitly skipped. Unit tests simulate Redis failures to exercise the existing fallback; those tests alone do not prove multi-process Redis behavior.
-
-## Limitations and interview introduction
-
-No new tables, migrations, frontend, billing, subscription marketplace, Kubernetes, Kafka or Celery are introduced. Existing internal `X-GateScale-*` header names and `GATESCALE_*` environment-variable names are retained for compatibility; they are technical identifiers, not the new product name. Shared services demonstrate routing and tenant identification, not real BaaS functionality. The Docker setup still uses development credentials and Django runserver; production work would require secrets management, hardened deployment, private networking, trusted backend authentication, appropriate customer identity, durable observability and an explicit Redis outage policy. Cache invalidation is broad and does not provide transactional consistency with future business databases.
-
-> I built **ServLink**, a multi-tenant Backend-as-a-Service platform centered on a Django API Gateway. I grouped shared demo backend services into E-commerce, Healthcare and Banking projects, with multiple businesses represented as applications under each project. The gateway validates API keys, enforces route permissions and application-level Redis rate limits, handles eligible caching, and records analytics in MySQL. NGINX balances traffic across three gateway instances. The backend services are deliberately lightweight request-echo implementations, so the engineering focus is on multi-tenant routing, shared infrastructure and scaling.
+The Docker demo is an infrastructure/routing demonstration rather than a finished production BaaS deployment.
