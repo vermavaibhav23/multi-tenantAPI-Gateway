@@ -55,7 +55,8 @@ def migrate_routes(apps, schema_editor):
     for (project_id, path), rows in groups.items():
         rows.sort(key=lambda obj: obj.id)
         current = rows[0]
-        service = BackendService.objects.get(pk=current.backend_service_id) if current.backend_service_id else None
+        existing_service_id = next((row.backend_service_id for row in rows if row.backend_service_id), None)
+        service = BackendService.objects.get(pk=existing_service_id) if existing_service_id else None
         if service is None:
             # Old routes could have no service association.
             slug = f'legacy-route-{current.id}'
