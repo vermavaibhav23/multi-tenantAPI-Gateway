@@ -2,13 +2,13 @@
 import secrets
 from datetime import datetime
 
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 from django.utils.text import slugify
 
 
 class APIKey(models.Model):
-    application = models.ForeignKey('Application', on_delete=models.CASCADE, related_name='api_keys')
+    application = models.OneToOneField('Application', on_delete=models.CASCADE, related_name='api_key')
     name = models.CharField(max_length=120)
     key_hash = models.CharField(max_length=128, unique=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -41,14 +41,28 @@ class APIKey(models.Model):
         return APIKey.create_for_application(application, name, expires_days=expires_days)
 
     @staticmethod
+    @transaction.atomic
     def create_for_application(application, name, expires_days=365):
+        # A single active credential per application; issuing a new one rotates
+        # (invalidates) the previous key instead of adding a second row.
         raw_key = f'ak_live_{secrets.token_urlsafe(32)}'
-        api_key = APIKey.objects.create(
-            application=application,
-            name=name,
-            key_hash=APIKey.hash_key(raw_key),
-            expires_at=timezone.now() + timezone.timedelta(days=expires_days),
-        )
+        hashed = APIKey.hash_key(raw_key)
+        expires_at = timezone.now() + timezone.timedelta(days=expires_days)
+        api_key = APIKey.objects.select_for_update().filter(application=application).first()
+        if api_key is None:
+            api_key = APIKey.objects.create(
+                application=application, name=name,
+                key_hash=hashed, expires_at=expires_at,
+            )
+        else:
+            api_key.name = name
+            api_key.key_hash = hashed
+            api_key.expires_at = expires_at
+            api_key.revoked_at = None
+            api_key.last_used_at = None
+            api_key.save(update_fields=[
+                'name', 'key_hash', 'expires_at', 'revoked_at', 'last_used_at',
+            ])
         return api_key, raw_key
 
     @classmethod
