@@ -97,7 +97,7 @@ class BaaSIntegrationTests(APITestCase):
 
     def test_two_businesses_share_one_backend_but_have_distinct_identity(self):
         origin, received = self.backend()
-        Route.objects.filter(pk=self.doctor_route().pk).update(target_url=origin + '/doctors')
+        BackendService.objects.filter(pk=self.doctor_route().backend_service_id).update(base_url=origin)
         with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin]):
             for app, key in ((self.app, self.key), (self.other_app, self.other_key)):
                 result = self.get(
@@ -123,7 +123,7 @@ class BaaSIntegrationTests(APITestCase):
             _, key = self.create_business(project, 'Test client', 'premium')
             for _, host, path in services:
                 origin, received = self.backend(host)
-                project.routes.filter(base_path=path).update(target_url=origin + path)
+                BackendService.objects.filter(project=project, slug=host).update(base_url=origin)
                 with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin]):
                     for method, _ in RouteMethod.METHOD_CHOICES:
                         with self.subTest(host=host, method=method):
@@ -164,7 +164,7 @@ class BaaSIntegrationTests(APITestCase):
 
     def test_cache_is_per_application_and_mutations_invalidate(self):
         origin, received = self.backend('fashion-product-service')
-        Route.objects.filter(pk=self.doctor_route().pk).update(target_url=origin + '/doctors')
+        BackendService.objects.filter(pk=self.doctor_route().backend_service_id).update(base_url=origin)
         with override_settings(
             GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin],
             GATEWAY_CACHEABLE_BACKEND_HOSTS=['127.0.0.1'],

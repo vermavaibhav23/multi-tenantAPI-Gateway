@@ -25,11 +25,12 @@ class GatewayRegressionTests(APITestCase):
         self.app = Application.objects.create(project=self.project, name='Client')
         _, self.key = APIKey.create_for_application(self.app, 'key')
         self.service = BackendService.objects.create(
-            project=self.project, name='Echo Service', slug='echo-service'
+            project=self.project, name='Echo Service', slug='echo-service',
+            base_url='http://fashion-product-service:8000',
         )
         self.route = Route.objects.create(
             project=self.project, backend_service=self.service, name='Echo',
-            base_path='/echo', target_url='http://fashion-product-service:8000/echo',
+            base_path='/echo',
         )
         RouteMethod.objects.create(route=self.route, method='GET')
         RouteMethod.objects.create(route=self.route, method='POST')
@@ -80,11 +81,11 @@ class GatewayRegressionTests(APITestCase):
         other_app = Application.objects.create(project=other_project, name='Other client')
         _, other_key = APIKey.create_for_application(other_app, 'key')
         other_service = BackendService.objects.create(
-            project=other_project, name='Other Echo'
+            project=other_project, name='Other Echo', base_url=self.service.base_url,
         )
         other_route = Route.objects.create(
             project=other_project, backend_service=other_service,
-            name='Echo', base_path='/echo', target_url=self.route.target_url,
+            name='Echo', base_path='/echo',
         )
         RouteMethod.objects.create(route=other_route, method='GET')
         with patch('gateway.views.GatewayRequestProxy.proxy',
@@ -107,8 +108,8 @@ class GatewayRegressionTests(APITestCase):
             self.assertEqual(self.get().status_code, 200)
             with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[]):
                 self.assertEqual(self.get().status_code, 403)
-            Route.objects.filter(pk=self.route.pk).update(
-                target_url='http://169.254.169.254/latest/meta-data/'
+            BackendService.objects.filter(pk=self.service.pk).update(
+                base_url='http://169.254.169.254'
             )
             self.assertEqual(self.get().status_code, 403)
             self.assertEqual(proxy.call_count, 1)
@@ -134,7 +135,7 @@ class GatewayRegressionTests(APITestCase):
             )
             request = RequestFactory().get('/echo')
             request.application = self.app
-            response = GatewayRequestProxy.proxy(request, self.route.target_url)
+            response = GatewayRequestProxy.proxy(request, self.service.base_url + '/echo')
             self.assertEqual(response.status_code, 302)
             self.assertFalse(client.call_args.kwargs['follow_redirects'])
             self.assertFalse(client.call_args.kwargs['trust_env'])

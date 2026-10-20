@@ -1,6 +1,7 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 import httpx
 import redis
@@ -42,9 +43,16 @@ class GatewayRoutingTests(APITestCase):
 
     def route(self, path='/doctors', url='http://127.0.0.1:9002/doctors',
               methods=None, service=None):
+        backend = service or self.service
+        if url:
+            parsed = urlsplit(url)
+            backend.base_url = f'{parsed.scheme}://{parsed.netloc}'
+        else:
+            backend.base_url = ''
+        backend.save(update_fields=['base_url'])
         route = Route.objects.create(
-            project=self.project, backend_service=service or self.service,
-            name=path, base_path=path, target_url=url,
+            project=self.project, backend_service=backend,
+            name=path, base_path=path,
         )
         for method, policy in (methods or [('GET', 'api_key_only')]):
             RouteMethod.objects.create(route=route, method=method, auth_policy=policy)
@@ -125,7 +133,7 @@ class GatewayRoutingTests(APITestCase):
             project=self.project, name='Doctor Admin Service'
         )
         self.route(
-            path='/doctors/admin', url='http://127.0.0.1:9002/admin',
+            path='/doctors/admin', url='http://127.0.0.1:9002/doctors/admin',
             methods=[('GET', 'api_key_and_jwt')], service=second_service,
         )
         self.assertEqual(self.client.get('/gateway/doctors-other', **self.headers()).status_code, 404)

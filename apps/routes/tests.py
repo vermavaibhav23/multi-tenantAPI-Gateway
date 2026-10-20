@@ -17,12 +17,12 @@ class RouteCreationTests(APITestCase):
 
     def add_route(self, path='/products', method='GET', auth_policy='api_key_only'):
         service = BackendService.objects.create(
-            project=self.project, name='Product Service', slug='product-service'
+            project=self.project, name='Product Service', slug='product-service',
+            base_url='http://fashion-product-service:8000',
         )
         response = self.client.post('/admin-api/routes', {
             'project': self.project.id, 'name': 'Products',
             'base_path': path, 'backend_service': service.id,
-            'target_url': 'http://fashion-product-service:8000/products',
         }, format='json')
         self.assertEqual(response.status_code, 201, response.data)
         route = Route.objects.get()
@@ -73,7 +73,6 @@ class RouteCreationTests(APITestCase):
         response = self.client.post('/admin-api/routes', {
             'project': self.project.id, 'name': 'Catalog',
             'base_path': '/catalog', 'backend_service': route.backend_service_id,
-            'target_url': 'http://fashion-product-service:8000/catalog',
         }, format='json')
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(Route.objects.filter(backend_service=route.backend_service).count(), 2)
@@ -102,13 +101,27 @@ class RouteCreationTests(APITestCase):
         self.assertEqual(bad.status_code, 400)
 
     def test_destination_validation_happens_before_creating_service(self):
-        response = self.client.post('/admin-api/routes', {
+        response = self.client.post('/admin-api/services', {
             'project': self.project.id, 'name': 'Blocked',
-            'base_path': '/meta', 'backend_service_name': 'Blocked',
-            'target_url': 'http://169.254.169.254/latest/meta-data/',
+            'base_url': 'http://169.254.169.254',
         }, format='json')
         self.assertEqual(response.status_code, 400)
         self.assertFalse(Route.objects.exists())
+        self.assertFalse(BackendService.objects.exists())
+
+    def test_service_origin_must_not_include_path_query_or_credentials(self):
+        for value in (
+            'http://fashion-product-service:8000/products',
+            'http://fashion-product-service:8000?debug=1',
+            'http://user:pass@fashion-product-service:8000',
+            'http://fashion-product-service:8000/',
+        ):
+            with self.subTest(base_url=value):
+                response = self.client.post('/admin-api/services', {
+                    'project': self.project.id, 'name': 'Bad Origin',
+                    'base_url': value,
+                }, format='json')
+                self.assertEqual(response.status_code, 400)
         self.assertFalse(BackendService.objects.exists())
 
     def test_unique_backend_service_name_within_project(self):

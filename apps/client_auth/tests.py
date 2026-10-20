@@ -39,12 +39,12 @@ class ClientUserAuthenticationTests(APITestCase):
         _, self.key_b = APIKey.create_for_application(self.app_b, 'clinic-b')
 
         service = BackendService.objects.create(
-            project=self.project, name='Doctor Service', slug='doctor-service'
+            project=self.project, name='Doctor Service', slug='doctor-service',
+            base_url='http://fashion-product-service:8000',
         )
         self.route = Route.objects.create(
             project=self.project, name='Doctors', backend_service=service,
             base_path='/doctors',
-            target_url='http://fashion-product-service:8000/doctors',
         )
         RouteMethod.objects.create(
             route=self.route, method='GET', auth_policy=RouteMethod.AUTH_API_KEY_AND_JWT
