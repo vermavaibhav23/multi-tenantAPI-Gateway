@@ -51,7 +51,7 @@ Admin APIs use a valid ServLink staff JWT, obtained from `POST /admin-api/auth/l
 | `GET/POST /admin-api/applications` | List or register business applications (creates first API key) |
 | `GET/POST /admin-api/application-users` | Staff lists or creates end-user accounts for owned applications |
 | `POST /admin-api/application-users/<id>/disable` | Staff disables an application user and immediately invalidates their tokens |
-| `POST /admin-api/keys` | Rotate application's only API key, returning the new secret once |
+| `POST /gateway/auth/register` | Register an application user via the application backend's API key |\n| `POST /admin-api/keys` | Rotate application's only API key, returning the new secret once |
 | `POST /admin-api/keys/<id>/revoke` | Revoke application API key |
 | `GET /admin-api/dashboard` | Owner-scoped project summary |
 | `GET /admin-api/analytics/summary` | Owner-scoped request statistics (optional `application_id`) |
@@ -165,7 +165,30 @@ Authorization: Bearer <servlink_staff_access_jwt>
 
 Disabling a user causes access and refresh tokens to be rejected immediately.
 
-### 2. Hospital A's backend logs in a user (API key required, no user JWT)
+### 2. New user self-registration (API key, no user JWT)
+
+The client application's trusted backend (not a public browser holding an API key)
+can register an end user under the Application resolved from its `X-API-Key`:
+
+```http
+POST /gateway/auth/register
+X-API-Key: <hospital-a-server-api-key>
+Content-Type: application/json
+
+{"email":"patient@hospital-a.example","password":"<strong unique password>"}
+```
+
+Response (`201 Created`):
+
+```json
+{"id":42,"application":101,"email":"patient@hospital-a.example","is_active":true}
+```
+
+The endpoint derives `application_id` exclusively from the verified API key, never from request input. It accepts only email and password; users cannot select roles, scopes, `is_active`, or another application. Passwords are validated and securely hashed; `UNIQUE(application_id, email)` prevents duplicate accounts within one business but allows the same email under different businesses. Registration is throttled per application and email, and database uniqueness protects against races. **It does not issue a JWT at registration:** the new user calls login next.
+
+**Demo security limitation:** Registrations become active immediately without confirming ownership of the email address. Add email verification, invitation/approval options, account recovery, more robust distributed edge rate limiting and anti-enumeration responses before allowing real healthcare or other sensitive client-user accounts. The API key must remain on the client application's trusted server, not be shared publicly.
+
+### 3. Hospital A's backend logs in a user (API key required, no user JWT)
 
 ```http
 POST /gateway/auth/login
@@ -183,7 +206,7 @@ Response:
 
 The API key identifies the Application; user lookup is constrained to that application. No application ID provided by the caller is trusted as identity. Failed logins return a generic 401; repeated attempts are rate-limited by application/email using Redis (per-process fallback during outage).
 
-### 3. Refresh user access
+### 4. Refresh user access
 
 ```http
 POST /gateway/auth/refresh
@@ -195,7 +218,7 @@ Content-Type: application/json
 
 Returns a new access token; the provided refresh token remains valid until expiration or user deactivation. A refresh token cannot be used as an access token.
 
-### 4. Call a JWT-protected backend route
+### 5. Call a JWT-protected backend route
 
 ```http
 GET /gateway/doctors/456

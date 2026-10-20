@@ -10,7 +10,7 @@ from gateway.services import RedisRateLimiter
 from .models import ApplicationUser
 from .serializers import (
     ApplicationUserCreateSerializer, ApplicationUserSerializer,
-    ClientLoginSerializer, ClientRefreshSerializer,
+    ClientLoginSerializer, ClientRefreshSerializer, ClientRegisterSerializer,
 )
 from .services import (
     ClientTokenError, _make_token, issue_token_pair, verify_client_token,
@@ -53,6 +53,53 @@ class ApplicationUserDisableView(APIView):
                 user.token_version += 1
                 user.save(update_fields=['is_active', 'token_version', 'updated_at'])
         return Response({'id': user.pk, 'is_active': False})
+
+
+class ClientRegisterView(APIView):
+    """Self-register an end user under the API key's verified Application."""
+    authentication_classes = []
+    permission_classes = []
+
+    def post(self, request):
+        application = getattr(request, 'application', None)
+        if application is None:
+            return Response({'detail': 'A valid application API key is required.'}, status=401)
+
+        serializer = ClientRegisterSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['email']
+
+        # Protect a shared registration endpoint from bulk account creation.
+        # RedisRateLimiter has the project's usual per-process fallback if Redis
+        # is unavailable; production should also rate-limit at the edge.
+        email_digest = hashlib.sha256(email.encode('utf-8')).hexdigest()
+        limiter = RedisRateLimiter()
+        if not limiter.allow_request(f'client_register:app:{application.pk}', 100, 3600):
+            return Response({'detail': 'Too many registration attempts.'}, status=429)
+        if not limiter.allow_request(
+            f'client_register:email:{application.pk}:{email_digest}', 5, 3600
+        ):
+            return Response({'detail': 'Too many registration attempts.'}, status=429)
+
+        if ApplicationUser.objects.filter(application=application, email=email).exists():
+            return Response({'email': ['This email is already registered.']}, status=400)
+
+        user = ApplicationUser(application=application, email=email)
+        user.set_password(serializer.validated_data['password'])
+
+        try:
+            with transaction.atomic():
+                user.save()
+        except IntegrityError:
+            # Unique(application, email) also protects concurrent registrations.
+            return Response({'email': ['This email is already registered.']}, status=400)
+
+        return Response({
+            'id': user.id,
+            'application': user.application_id,
+            'email': user.email,
+            'is_active': user.is_active,
+        }, status=status.HTTP_201_CREATED)
 
 
 class ClientLoginView(APIView):

@@ -39,6 +39,26 @@ class ApplicationUserCreateSerializer(ApplicationUserSerializer):
         return user
 
 
+class ClientRegisterSerializer(serializers.Serializer):
+    """Self-registration uses only trusted API-key context, never a supplied app ID."""
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, trim_whitespace=False, max_length=128)
+
+    def validate_email(self, value):
+        return value.strip().lower()
+
+    def validate(self, attrs):
+        # DRF ignores unexpected fields by default; do not silently accept
+        # role, admin, application_id, or permission claims from callers.
+        unexpected = set(self.initial_data) - {'email', 'password'}
+        if unexpected:
+            raise serializers.ValidationError({
+                'detail': 'Only email and password can be supplied for registration.'
+            })
+        validate_password(attrs['password'])
+        return attrs
+
+
 class ClientLoginSerializer(serializers.Serializer):
     email = serializers.EmailField()
     password = serializers.CharField(trim_whitespace=False)
