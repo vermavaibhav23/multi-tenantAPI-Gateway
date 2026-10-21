@@ -15,35 +15,15 @@ from routes.models import Route
 class RedisRateLimiter:
     _memory_store = {}
     _lock = threading.Lock()
-    _TOKEN_BUCKET_SCRIPT = """
-local key = KEYS[1]
-local capacity = tonumber(ARGV[1])
-local window_seconds = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
-local refill_rate = capacity / window_seconds
-
-local bucket = redis.call('HMGET', key, 'tokens', 'updated_at')
-local tokens = tonumber(bucket[1])
-local updated_at = tonumber(bucket[2])
-
-if tokens == nil or updated_at == nil then
-    tokens = capacity
-    updated_at = now
-else
-    local elapsed = math.max(0, now - updated_at)
-    tokens = math.min(capacity, tokens + (elapsed * refill_rate))
-    updated_at = now
+    _FIXED_WINDOW_SCRIPT = """
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+    redis.call('EXPIRE', KEYS[1], tonumber(ARGV[2]))
 end
-
-local allowed = 0
-if tokens >= 1 then
-    tokens = tokens - 1
-    allowed = 1
+if count <= tonumber(ARGV[1]) then
+    return 1
 end
-
-redis.call('HSET', key, 'tokens', tokens, 'updated_at', updated_at)
-redis.call('EXPIRE', key, math.ceil(window_seconds * 2))
-return allowed
+return 0
 """
 
     def __init__(self, redis_url=None):
@@ -51,25 +31,26 @@ return allowed
         self.client = redis.Redis.from_url(self.redis_url, decode_responses=True, socket_connect_timeout=0.5, socket_timeout=0.5)
 
     def _fallback_allow_request(self, key, limit, window_seconds):
-        now = time.time()
+        # Local fallback is best-effort only: it is not shared across replicas.
+        window_number = int(time.time()) // window_seconds
         with self._lock:
-            tokens, updated_at = self._memory_store.get(key, (float(limit), now))
-            refill_rate = float(limit) / float(window_seconds)
-            elapsed = max(0, now - updated_at)
-            tokens = min(float(limit), tokens + (elapsed * refill_rate))
-            if tokens < 1:
-                self._memory_store[key] = (tokens, now)
-                return False
-            self._memory_store[key] = (tokens - 1, now)
-            return True
+            saved_window, count = self._memory_store.get(key, (None, 0))
+            if saved_window != window_number:
+                count = 0
+            count += 1
+            self._memory_store[key] = (window_number, count)
+            return count <= limit
 
     def allow_request(self, key, limit, window_seconds):
+        # All gateway replicas use the same aligned time window and Redis key.
+        now = int(time.time())
+        window_key = f'{key}:{now // window_seconds}'
+        ttl_seconds = window_seconds - (now % window_seconds)
         try:
-            allowed = self.client.eval(self._TOKEN_BUCKET_SCRIPT, 1, key, limit, window_seconds, time.time())
+            allowed = self.client.eval(self._FIXED_WINDOW_SCRIPT, 1, window_key, limit, ttl_seconds)
             return int(allowed) == 1
         except redis.RedisError:
             return self._fallback_allow_request(key, limit, window_seconds)
-
 
 class RouteResolver:
     @staticmethod
