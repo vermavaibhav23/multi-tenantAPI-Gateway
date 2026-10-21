@@ -36,7 +36,7 @@ x-redis-node: &redis-node
     --cluster-enabled yes
     --cluster-config-file /data/nodes.conf
     --cluster-node-timeout 5000
-    --cluster-announce-hostname "$REDIS_NODE_NAME"
+    --cluster-announce-hostname "$$REDIS_NODE_NAME"
     --cluster-preferred-endpoint-type hostname
     --appendonly yes'
   healthcheck:
