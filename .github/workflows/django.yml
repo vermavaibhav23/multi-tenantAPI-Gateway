@@ -24,3 +24,37 @@ jobs:
         env:
           USE_SQLITE: 'True'
         run: python manage.py test authentication users routes gateway analytics client_auth
+
+  redis-cluster:
+    name: Six-node Redis Cluster integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start six Redis nodes and initialize the cluster
+        run: |
+          docker compose up -d redis-cluster-init
+          id=$(docker compose ps -a -q redis-cluster-init)
+          for attempt in $(seq 1 120); do
+            state=$(docker inspect --format '{{.State.Status}}' "$id")
+            if [ "$state" = "exited" ]; then
+              code=$(docker inspect --format '{{.State.ExitCode}}' "$id")
+              docker compose logs redis-cluster-init
+              test "$code" -eq 0
+              exit
+            fi
+            sleep 1
+          done
+          docker compose logs redis-cluster-init
+          exit 1
+      - name: Exercise rate limits and cache invalidation across primaries
+        run: |
+          docker compose run --build --rm --no-deps \
+            -e USE_SQLITE=True \
+            -e GATESCALE_TEST_REDIS_CLUSTER_URL=redis://redis-node-1:6379 \
+            api-gateway-1 python manage.py test gateway.test_redis_cluster --verbosity 2
+      - name: Inspect failures
+        if: failure()
+        run: docker compose logs redis-node-1 redis-node-2 redis-node-3 redis-node-4 redis-node-5 redis-node-6
+      - name: Tear down test containers
+        if: always()
+        run: docker compose down -v
