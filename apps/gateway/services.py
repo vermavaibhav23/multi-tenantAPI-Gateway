@@ -11,6 +11,8 @@ from analytics.models import RequestLog
 from routes.destinations import validate_target_url
 from routes.models import Route
 
+from .redis_client import get_redis_client
+
 
 class RedisRateLimiter:
     _memory_store = {}
@@ -27,8 +29,12 @@ return 0
 """
 
     def __init__(self, redis_url=None):
-        self.redis_url = redis_url or settings.REDIS_URL
-        self.client = redis.Redis.from_url(self.redis_url, decode_responses=True, socket_connect_timeout=0.5, socket_timeout=0.5)
+        # Redis Cluster needs topology discovery only once per worker.
+        # If Redis is initially unavailable, preserve the existing local fallback.
+        try:
+            self.client = get_redis_client(redis_url)
+        except (redis.RedisError, OSError):
+            self.client = None
 
     def _fallback_allow_request(self, key, limit, window_seconds):
         # Local fallback is best-effort only: it is not shared across replicas.
@@ -46,6 +52,8 @@ return 0
         now = int(time.time())
         window_key = f'{key}:{now // window_seconds}'
         ttl_seconds = window_seconds - (now % window_seconds)
+        if self.client is None:
+            return self._fallback_allow_request(key, limit, window_seconds)
         try:
             allowed = self.client.eval(self._FIXED_WINDOW_SCRIPT, 1, window_key, limit, ttl_seconds)
             return int(allowed) == 1
@@ -138,8 +146,12 @@ class ProductResponseCache:
     _lock = threading.Lock()
 
     def __init__(self, redis_url=None):
-        self.redis_url = redis_url or settings.REDIS_URL
-        self.client = redis.Redis.from_url(self.redis_url, decode_responses=True, socket_connect_timeout=0.5, socket_timeout=0.5)
+        # Redis Cluster needs topology discovery only once per worker.
+        # If Redis is initially unavailable, preserve the existing local fallback.
+        try:
+            self.client = get_redis_client(redis_url)
+        except (redis.RedisError, OSError):
+            self.client = None
 
     def _memory_get(self, key):
         with self._lock:
@@ -172,11 +184,22 @@ class ProductResponseCache:
             self._memory_set(key, value, ttl_seconds)
 
     def invalidate_prefix(self, prefix):
+        # A Redis Cluster SCAN on one node does not cover other primary shards.
+        # Scan each primary explicitly and route DELETE through the cluster client.
         try:
-            self.client.ping()
-            for key in self.client.scan_iter(f'{prefix}*'):
-                self.client.delete(key)
+            if self.client is None:
+                raise redis.ConnectionError('Redis unavailable')
+            if settings.REDIS_CLUSTER_ENABLED:
+                for node in self.client.get_primaries():
+                    for key in node.redis_connection.scan_iter(match=f'{prefix}*', count=100):
+                        self.client.delete(key)
+            else:
+                for key in self.client.scan_iter(match=f'{prefix}*', count=100):
+                    self.client.delete(key)
         except Exception:
+            # Local cache invalidation is best-effort; it is not distributed.
+            pass
+        finally:
             with self._lock:
                 for key in list(self._memory_store):
                     if key.startswith(prefix):
