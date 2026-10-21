@@ -1,6 +1,6 @@
 # ServLink — Multi-Tenant Backend-as-a-Service API Gateway
 
-ServLink is a Django REST Framework gateway that lets business applications share domain-specific demo microservices (Healthcare, Banking, E-commerce). It uses API keys to identify applications, Redis token-bucket rate limiting, optional JWT verification on configured HTTP methods, safe GET caching, request analytics, and NGINX across three gateway replicas.
+ServLink is a Django REST Framework gateway that lets business applications share domain-specific demo microservices (Healthcare, Banking, E-commerce). It uses API keys to identify applications, Redis fixed-window rate limiting, optional JWT verification on configured HTTP methods, safe GET caching, request analytics, and NGINX across three gateway replicas.
 
 **Scope:** The domain backend containers remain dummy request-echo services. ServLink now includes a shared, application-isolated **client-user authentication component** in the Django gateway deployment. It authenticates application users and issues scoped-to-application JWTs; it does not yet provide roles/RBAC, actual patients/bookings/payments, or a separately deployed AuthService container.
 
@@ -29,11 +29,17 @@ Existing `slug`, timestamp, description and key revocation fields are retained f
 1. The `X-API-Key` is hashed and looked up in APIKey, identifying the Application and its Project. No caller-provided project/tenant ID is trusted for routing.
 2. Match the most specific, full-segment `Route.base_path` in that project. `/doctors` matches `/doctors/456` but not `/doctors-extra`.
 3. Look up `RouteMethod(route, request.method)`. If absent, return 405 without trying another prefix. If its `auth_policy` is `api_key_and_jwt`, verify a **client-user** bearer token signed by the shared client authentication component, and require the JWT application identity to match the validated API key. ServLink staff JWTs are not accepted for client routes.
-4. Apply RoutePermission (if present), per-Application Redis token-bucket rate limit, safe GET cache rules and backend destination-origin allowlist.
+4. Apply RoutePermission (if present), per-Application Redis fixed-window rate limit, safe GET cache rules and backend destination-origin allowlist.
 5. Strip `/gateway` from the incoming path and forward the original HTTP method, body and query string to `BackendService.base_url + entire remaining request path`. Strip the raw API key, bearer token and spoofable identity headers; attach verified `X-GateScale-Application-ID` and (when authenticated) `X-GateScale-Client-User-ID`. Downstream services must be protected from direct untrusted network access.
 6. Return the downstream status/body and record RequestLog analytics.
 
 Example: `GET /gateway/doctors/456` with Hospital A's API key, a Route whose `base_path=/doctors`, and DoctorService whose `base_url=http://healthcare-doctor-service:8000` is sent to `http://healthcare-doctor-service:8000/doctors/456`.
+
+### Fixed-window rate limiting
+
+Each business application has its own Redis counter for each aligned time window. The normal plan allows **100 requests per 60 seconds**, while the premium plan allows **1,000 requests per 60 seconds**. All three API Gateway replicas use the same Redis key (`gateway_rate:application:<application_id>:<window_number>`) so the count is shared. A Lua script atomically increments the counter and gives new counters an expiry at the end of the window. Requests beyond the limit receive HTTP **429**, and the counter resets in the next window.
+
+**Limitations:** Fixed windows can permit bursts near a window boundary. If Redis is unavailable, the current best-effort, in-process fallback applies limits separately in each gateway replica, so enforcement is no longer globally consistent until Redis recovers.
 
 ## Administrator REST endpoints
 
