@@ -1,6 +1,6 @@
 # ServLink — Multi-Tenant Backend-as-a-Service API Gateway
 
-ServLink is a Django REST Framework gateway that lets business applications share domain-specific demo microservices (Healthcare, Banking, E-commerce). It uses API keys to identify applications, Redis fixed-window rate limiting, optional JWT verification on configured HTTP methods, safe GET caching, request analytics, and NGINX across three gateway replicas.
+ServLink is a Django REST Framework gateway that lets business applications share domain-specific demo microservices (Healthcare, Banking, E-commerce). It uses API keys to identify applications, Redis Cluster-backed fixed-window rate limiting, optional JWT verification on configured HTTP methods, safe GET caching, request analytics, and NGINX across three gateway replicas.
 
 **Scope:** The domain backend containers remain dummy request-echo services. ServLink now includes a shared, application-isolated **client-user authentication component** in the Django gateway deployment. It authenticates application users and issues scoped-to-application JWTs; it does not yet provide roles/RBAC, actual patients/bookings/payments, or a separately deployed AuthService container.
 
@@ -34,6 +34,59 @@ Existing `slug`, timestamp, description and key revocation fields are retained f
 6. Return the downstream status/body and record RequestLog analytics.
 
 Example: `GET /gateway/doctors/456` with Hospital A's API key, a Route whose `base_path=/doctors`, and DoctorService whose `base_url=http://healthcare-doctor-service:8000` is sent to `http://healthcare-doctor-service:8000/doctors/456`.
+
+### Redis Cluster (3 primaries + 3 replicas)
+
+`docker-compose.yml` now provisions six Redis 7 nodes (`redis-node-1` through
+`redis-node-6`) on an internal Docker network. Each node listens on container
+port 6379 and has its **own named volume** for AOF and cluster metadata. The
+`redis-cluster-init` one-shot service waits for node readiness, initializes
+the cluster once with `redis-cli --cluster create ... --cluster-replicas 1`,
+then requires three primaries, three replicas and all 16,384 hash slots before
+the API gateways can start. The initialization step preserves existing cluster
+state on subsequent starts.
+
+```bash
+docker compose up --build -d
+docker compose ps
+docker compose logs redis-cluster-init
+docker compose exec redis-node-1 redis-cli cluster info
+docker compose exec redis-node-1 redis-cli cluster nodes
+```
+
+All gateway replicas use `REDIS_CLUSTER_ENABLED=True` and
+`REDIS_CLUSTER_URL=redis://redis-node-1:6379` (a startup seed, **not** a
+pinned destination). A cached, cluster-aware Python client discovers the
+topology and routes rate-limiter counters and response-cache keys to their
+owning primaries. Reads and writes of rate-limit counters stay on the primary
+to keep the increments atomic; replicas are used for failover, not to loosen
+rate-limit consistency. Cache invalidation deliberately scans **each primary**
+so a project write removes cached responses from every shard. Scanning is
+a simple demo implementation and can become expensive with large key counts;
+versioned cache keys are a possible improvement.
+
+Redis Cluster uses hash slots, **not traditional consistent hashing**. The
+three replicas improve tolerance of individual Redis node failures, but all
+six containers still share the same Docker host; this is **not host-level
+high availability**. Redis failover can briefly interrupt requests. During a
+Redis outage, the existing gateway-local rate-limit/cache fallback may be
+inconsistent between gateway replicas. Do not expose the Redis cluster
+network publicly; this demo does not configure Redis authentication or TLS.
+
+**Running just the Redis Cluster integration tests from Compose:**
+
+```bash
+docker compose run --rm --no-deps \
+  -e USE_SQLITE=True \
+  -e GATESCALE_TEST_REDIS_CLUSTER_URL=redis://redis-node-1:6379 \
+  api-gateway-1 python manage.py test gateway.test_redis_cluster
+```
+
+Outside Docker Compose, `REDIS_CLUSTER_ENABLED=False` retains the
+standalone Redis connection for local development and tests. Moving from the
+old standalone Redis container **does not automatically migrate cached
+responses or current rate counters**; those are disposable, but plan a
+maintenance window if preserving them matters.
 
 ### Fixed-window rate limiting
 
