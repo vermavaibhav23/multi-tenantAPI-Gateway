@@ -127,6 +127,9 @@ CLIENT_ACCESS_TOKEN_LIFETIME = timedelta(minutes=15)
 CLIENT_REFRESH_TOKEN_LIFETIME = timedelta(days=7)
 
 REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
+# Docker Compose uses Redis Cluster; stand-alone remains supported for local tests.
+REDIS_CLUSTER_ENABLED = os.getenv('REDIS_CLUSTER_ENABLED', 'False').lower() == 'true'
+REDIS_CLUSTER_URL = os.getenv('REDIS_CLUSTER_URL', 'redis://redis-node-1:6379')
 CACHES = {
     'default': {
         'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
