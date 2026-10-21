@@ -220,10 +220,23 @@ class GatewayRoutingTests(APITestCase):
             self.assertEqual(self.client.delete('/gateway/doctors', **self.headers()).status_code, 401)
             self.assertEqual(proxy.call_count, 1)
 
-    def test_token_bucket_refills_over_time(self):
+    def test_fixed_window_resets_at_boundary(self):
         limiter = RedisRateLimiter()
-        with patch('gateway.services.time.time', side_effect=[0, 0, 29, 30]):
-            self.assertTrue(limiter._fallback_allow_request('bucket:test', 2, 60))
-            self.assertTrue(limiter._fallback_allow_request('bucket:test', 2, 60))
-            self.assertFalse(limiter._fallback_allow_request('bucket:test', 2, 60))
-            self.assertTrue(limiter._fallback_allow_request('bucket:test', 2, 60))
+        with patch('gateway.services.time.time', side_effect=[0, 1, 59, 60]):
+            self.assertTrue(limiter._fallback_allow_request('window:test', 2, 60))
+            self.assertTrue(limiter._fallback_allow_request('window:test', 2, 60))
+            self.assertFalse(limiter._fallback_allow_request('window:test', 2, 60))
+            self.assertTrue(limiter._fallback_allow_request('window:test', 2, 60))
+
+    def test_redis_uses_distinct_keys_for_fixed_windows(self):
+        limiter = RedisRateLimiter()
+        with patch('gateway.services.time.time', side_effect=[59, 60]), patch.object(
+            limiter.client, 'eval', side_effect=[1, 1],
+        ) as redis_eval:
+            self.assertTrue(limiter.allow_request('window:shared', 1, 60))
+            self.assertTrue(limiter.allow_request('window:shared', 1, 60))
+        first_call, second_call = redis_eval.call_args_list
+        self.assertEqual(first_call.args[2], 'window:shared:0')
+        self.assertEqual(second_call.args[2], 'window:shared:1')
+        self.assertEqual(first_call.args[4], 1)
+        self.assertEqual(second_call.args[4], 60)
