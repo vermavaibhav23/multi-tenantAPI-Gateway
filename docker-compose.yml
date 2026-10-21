@@ -4,7 +4,8 @@ x-gateway-env: &gateway-env
   MYSQL_DATABASE: gateway_db
   MYSQL_USER: gateway
   MYSQL_PASSWORD: gateway
-  REDIS_URL: redis://redis:6379/0
+  REDIS_CLUSTER_ENABLED: "True"
+  REDIS_CLUSTER_URL: redis://redis-node-1:6379
   DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:-dev-secret-key-change-me}"
   CLIENT_JWT_SIGNING_KEY: "${CLIENT_JWT_SIGNING_KEY:-}"
   GATEWAY_CACHEABLE_BACKEND_HOSTS: "${GATEWAY_CACHEABLE_BACKEND_HOSTS-fashion-user-service,fashion-product-service,fashion-order-service}"
@@ -16,8 +17,34 @@ x-gateway-base: &gateway-base
   depends_on:
     db:
       condition: service_healthy
-    redis:
-      condition: service_started
+    redis-cluster-init:
+      condition: service_completed_successfully
+  networks:
+    - default
+    - redis-cluster
+
+# The six nodes run on the same internal port because they have independent IPs.
+# Docker service names are advertised to cluster-aware clients inside Docker.
+x-redis-node: &redis-node
+  image: redis:7-alpine
+  networks:
+    - redis-cluster
+  command: >
+    sh -c 'exec redis-server
+    --port 6379
+    --protected-mode no
+    --cluster-enabled yes
+    --cluster-config-file /data/nodes.conf
+    --cluster-node-timeout 5000
+    --cluster-announce-hostname "$REDIS_NODE_NAME"
+    --cluster-preferred-endpoint-type hostname
+    --appendonly yes'
+  healthcheck:
+    test: ["CMD", "redis-cli", "-p", "6379", "ping"]
+    interval: 3s
+    timeout: 2s
+    retries: 30
+  restart: unless-stopped
 
 services:
   nginx:
@@ -170,11 +197,80 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
 
-  redis:
+  redis-node-1:
+    <<: *redis-node
+    environment:
+      REDIS_NODE_NAME: redis-node-1
+    volumes:
+      - redis_node_1_data:/data
+
+  redis-node-2:
+    <<: *redis-node
+    environment:
+      REDIS_NODE_NAME: redis-node-2
+    volumes:
+      - redis_node_2_data:/data
+
+  redis-node-3:
+    <<: *redis-node
+    environment:
+      REDIS_NODE_NAME: redis-node-3
+    volumes:
+      - redis_node_3_data:/data
+
+  redis-node-4:
+    <<: *redis-node
+    environment:
+      REDIS_NODE_NAME: redis-node-4
+    volumes:
+      - redis_node_4_data:/data
+
+  redis-node-5:
+    <<: *redis-node
+    environment:
+      REDIS_NODE_NAME: redis-node-5
+    volumes:
+      - redis_node_5_data:/data
+
+  redis-node-6:
+    <<: *redis-node
+    environment:
+      REDIS_NODE_NAME: redis-node-6
+    volumes:
+      - redis_node_6_data:/data
+
+  # One-shot, idempotent bootstrap: allocate 16,384 hash slots, 3 primaries and 3 replicas.
+  redis-cluster-init:
     image: redis:7-alpine
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
+    networks:
+      - redis-cluster
+    volumes:
+      - ./redis/cluster-init.sh:/cluster-init.sh:ro
+    entrypoint: ["/bin/sh", "/cluster-init.sh"]
+    depends_on:
+      redis-node-1:
+        condition: service_healthy
+      redis-node-2:
+        condition: service_healthy
+      redis-node-3:
+        condition: service_healthy
+      redis-node-4:
+        condition: service_healthy
+      redis-node-5:
+        condition: service_healthy
+      redis-node-6:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   mysql_data:
+  redis_node_1_data:
+  redis_node_2_data:
+  redis_node_3_data:
+  redis_node_4_data:
+  redis_node_5_data:
+  redis_node_6_data:
+
+networks:
+  redis-cluster:
+    internal: true
