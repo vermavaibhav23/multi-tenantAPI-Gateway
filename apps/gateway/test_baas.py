@@ -226,7 +226,7 @@ class ManagementAccessTests(APITestCase):
 @skipUnless(os.getenv('GATESCALE_TEST_REDIS_URL'),
             'Set GATESCALE_TEST_REDIS_URL for integration test with shared Redis.')
 class SharedRedisTests(SimpleTestCase):
-    def test_independent_clients_share_atomic_bucket(self):
+    def test_independent_clients_share_atomic_fixed_window(self):
         first = RedisRateLimiter(os.environ['GATESCALE_TEST_REDIS_URL'])
         second = RedisRateLimiter(os.environ['GATESCALE_TEST_REDIS_URL'])
         key = f'gateway_test:{uuid4().hex}'
@@ -239,4 +239,6 @@ class SharedRedisTests(SimpleTestCase):
                 self.assertTrue(first.allow_request(key, 1, 600))
                 self.assertFalse(second.allow_request(key, 1, 600))
         finally:
-            first.client.delete(key)
+            window_keys = list(first.client.scan_iter(f'{key}:*'))
+            if window_keys:
+                first.client.delete(*window_keys)
