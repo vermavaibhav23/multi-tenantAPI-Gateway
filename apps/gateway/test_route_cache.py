@@ -42,6 +42,12 @@ class RouteCacheTests(APITestCase):
             mocked.start()
             self.addCleanup(mocked.stop)
 
+    def test_route_snapshot_has_60_second_ttl(self):
+        with patch.object(self.redis, 'eval', wraps=self.redis.eval) as redis_eval:
+            RouteResolver.get_route_for_request(self.project, 'GET', '/doctors/456')
+        # The atomic cache publication script receives the TTL as its last argument.
+        self.assertEqual(redis_eval.call_args.args[-1], 60)
+
     def test_second_lookup_uses_redis_without_route_or_method_db_queries(self):
         with patch('gateway.route_cache._read_project_routes', wraps=_read_project_routes) as loader:
             first = RouteResolver.get_route_for_request(self.project, 'GET', '/doctors/456')
