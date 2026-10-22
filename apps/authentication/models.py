@@ -14,7 +14,6 @@ class APIKey(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
-    last_used_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [
@@ -59,9 +58,8 @@ class APIKey(models.Model):
             api_key.key_hash = hashed
             api_key.expires_at = expires_at
             api_key.revoked_at = None
-            api_key.last_used_at = None
             api_key.save(update_fields=[
-                'name', 'key_hash', 'expires_at', 'revoked_at', 'last_used_at',
+                'name', 'key_hash', 'expires_at', 'revoked_at',
             ])
         return api_key, raw_key
 
@@ -77,8 +75,6 @@ class APIKey(models.Model):
             return None
         if api_key.expires_at and api_key.expires_at < timezone.now():
             return None
-        api_key.last_used_at = timezone.now()
-        api_key.save(update_fields=['last_used_at'])
         return api_key
 
     def can_access(self, route):
