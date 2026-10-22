@@ -45,12 +45,12 @@ class GatewayProxyView(APIView):
         route = RouteResolver.get_route_for_request(project, request.method, route_path)
         if not route:
             return reject('Route not found.', 404)
-        method_policy = RouteMethod.objects.filter(route=route, method=request.method).first()
+        method_policy = route._cached_method_policies.get(request.method)
         if method_policy is None:
             return reject('Method not allowed for this route.', 405, route)
         if not request.api_key.can_access(route):
             return reject('Application is not allowed to access this route.', 403, route)
-        if method_policy.auth_policy == RouteMethod.AUTH_API_KEY_AND_JWT:
+        if method_policy == RouteMethod.AUTH_API_KEY_AND_JWT:
             try:
                 request.client_user = authenticate_client_bearer(
                     request.headers.get('Authorization'), request.application
@@ -82,7 +82,7 @@ class GatewayProxyView(APIView):
         cache_key = None
         project_cache_prefix = f'gateway_cache:v2:{project.id}:'
         cache_allowed = (
-            request.method == 'GET' and method_policy.auth_policy == RouteMethod.AUTH_API_KEY_ONLY
+            request.method == 'GET' and method_policy == RouteMethod.AUTH_API_KEY_ONLY
             and urlsplit(target_url).hostname in settings.GATEWAY_CACHEABLE_BACKEND_HOSTS
             and not request.headers.get('Authorization') and not request.headers.get('Cookie')
         )
