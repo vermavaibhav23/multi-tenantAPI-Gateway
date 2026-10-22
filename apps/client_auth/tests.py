@@ -11,6 +11,7 @@ from authentication.models import APIKey, Application
 from client_auth.models import ApplicationUser
 from client_auth.services import issue_token_pair
 from gateway.services import GatewayRequestProxy, RedisRateLimiter
+from gateway.test_support import FakeRedisClient
 from routes.models import BackendService, Route, RouteMethod
 from users.models import Project, User
 
@@ -21,11 +22,10 @@ from users.models import Project, User
 )
 class ClientUserAuthenticationTests(APITestCase):
     def setUp(self):
-        offline = patch('redis.Redis.execute_command',
-                        side_effect=redis.ConnectionError('test offline'))
-        offline.start()
-        self.addCleanup(offline.stop)
-        RedisRateLimiter._memory_store.clear()
+        shared_redis = FakeRedisClient()
+        mocked_redis = patch('gateway.services.get_redis_client', return_value=shared_redis)
+        mocked_redis.start()
+        self.addCleanup(mocked_redis.stop)
         self.admin = User.objects.create_user(
             username='owner', email='owner@example.com',
             password='AdminSecret123!', is_staff=True,
@@ -286,3 +286,15 @@ class ClientUserAuthenticationTests(APITestCase):
         for _ in range(10):
             self.assertEqual(self._login(self.key_a, password='wrong').status_code, 401)
         self.assertEqual(self._login(self.key_a).status_code, 429)
+
+    def test_registration_fails_closed_during_redis_outage(self):
+        with patch('gateway.services.get_redis_client', side_effect=redis.ConnectionError('offline')):
+            result = self._register(email='outage@example.com')
+        self.assertEqual(result.status_code, 503)
+        self.assertFalse(ApplicationUser.objects.filter(email='outage@example.com').exists())
+
+    def test_login_fails_closed_during_redis_outage(self):
+        with patch('gateway.services.get_redis_client', side_effect=redis.ConnectionError('offline')):
+            result = self._login(self.key_a)
+        self.assertEqual(result.status_code, 503)
+        self.assertNotIn('access', result.data)
