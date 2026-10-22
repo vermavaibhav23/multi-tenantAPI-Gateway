@@ -65,16 +65,22 @@ class GatewayRegressionTests(APITestCase):
         RoutePermission.objects.create(application=self.app, route=route)
         self.assertFalse(self.app.has_permission(route))
 
-    def test_runtime_policy_change_works_without_route_cache(self):
-        RouteResolver.get_route_for_request(self.project, 'GET', 'echo')
-        cache.set(f'route:{self.project.id}:GET:/echo', self.route, 300)
-        RouteMethod.objects.filter(route=self.route, method='GET').update(
-            auth_policy=RouteMethod.AUTH_API_KEY_AND_JWT
-        )
+    def test_committed_route_and_policy_updates_invalidate_route_cache(self):
+        # Prime the shared route cache before changing configuration.
+        self.assertIsNotNone(RouteResolver.get_route_for_request(self.project, 'GET', 'echo'))
+        method_policy = self.route.method_policies.get(method='GET')
+        with self.captureOnCommitCallbacks(execute=True):
+            method_policy.auth_policy = RouteMethod.AUTH_API_KEY_AND_JWT
+            method_policy.save(update_fields=['auth_policy'])
         self.assertEqual(self.get().status_code, 401)
-        Route.objects.filter(pk=self.route.pk).update(is_active=False)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.route.is_active = False
+            self.route.save(update_fields=['is_active'])
         self.assertEqual(self.get().status_code, 404)
-        self.route.delete()
+
+        with self.captureOnCommitCallbacks(execute=True):
+            self.route.delete()
         self.assertEqual(self.get().status_code, 404)
 
     def test_cache_isolated_by_project_and_invalidated_on_write(self):
@@ -111,9 +117,9 @@ class GatewayRegressionTests(APITestCase):
             self.assertEqual(self.get().status_code, 200)
             with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[]):
                 self.assertEqual(self.get().status_code, 403)
-            BackendService.objects.filter(pk=self.service.pk).update(
-                base_url='http://169.254.169.254'
-            )
+            with self.captureOnCommitCallbacks(execute=True):
+                self.service.base_url = 'http://169.254.169.254'
+                self.service.save(update_fields=['base_url'])
             self.assertEqual(self.get().status_code, 403)
             self.assertEqual(proxy.call_count, 1)
 
