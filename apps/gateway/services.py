@@ -7,7 +7,6 @@ from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
-from analytics.models import RequestLog
 from routes.destinations import validate_target_url
 from routes.models import Route
 
@@ -111,24 +110,6 @@ class GatewayRequestProxy:
         except httpx.RequestError:
             return None
 
-
-class GatewayLogger:
-    @staticmethod
-    def log_request(project, api_key, route, endpoint, request, status_code, latency_ms):
-        RequestLog.objects.create(
-            project=project,
-            api_key=api_key,
-            route=route,
-            endpoint=endpoint,
-            method=request.method,
-            status_code=status_code,
-            latency_ms=latency_ms,
-            ip_address=request.META.get('REMOTE_ADDR'),
-            downstream_service=route.backend_service.slug if route and route.backend_service else '',
-            application=api_key.application if api_key else None,
-            customer=request.user if getattr(request, 'user', None) and request.user.is_authenticated else None,
-            client_user=getattr(request, 'client_user', None),
-        )
 
 
 class ProductResponseCache:
