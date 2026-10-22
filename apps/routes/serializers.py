@@ -41,6 +41,10 @@ class RouteSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'created_at', 'downstream_service', 'method_policies')
 
     def validate_base_path(self, value):
+        if value == '/' or value.count('/') != 1:
+            raise serializers.ValidationError(
+                'Use a single-segment base path such as /doctors or /patients.'
+            )
         if not value.startswith('/') or '//' in value or '?' in value or '#' in value:
             raise serializers.ValidationError('Use a clean absolute API prefix such as /doctors.')
         if value != '/' and value.endswith('/'):
