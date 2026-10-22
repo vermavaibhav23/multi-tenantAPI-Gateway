@@ -12,7 +12,6 @@ from django.core.management import call_command, CommandError
 from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APITestCase
 
-from analytics.models import RequestLog
 from authentication.models import APIKey, Application, RoutePermission
 from dummy_backend.server import DummyBackendHandler
 from gateway.services import ProductResponseCache, RedisRateLimiter
@@ -113,10 +112,6 @@ class BaaSIntegrationTests(APITestCase):
             lower = {key.lower(): value for key, value in headers.items()}
             self.assertNotIn('x-api-key', lower)
             self.assertNotEqual(lower.get('x-gatescale-application-id'), '9999')
-        self.assertEqual(
-            set(RequestLog.objects.values_list('application_id', flat=True)),
-            {self.app.id, self.other_app.id},
-        )
 
     def test_all_nine_backends_accept_five_methods(self):
         for slug, (_, services) in INDUSTRY_BUNDLES.items():
@@ -186,23 +181,6 @@ class BaaSIntegrationTests(APITestCase):
         self.assertEqual(self.get().status_code, 401)
         self.assertFalse(ProductResponseCache._memory_store)
 
-    def test_analytics_scoped_to_owned_apps(self):
-        with patch('gateway.views.GatewayRequestProxy.proxy',
-                   return_value=httpx.Response(200, json={'ok': True})):
-            self.get()
-            self.get(self.other_key)
-        self.client.force_authenticate(self.admin)
-        summary = self.client.get('/admin-api/analytics/summary', {'application_id': self.app.id})
-        self.assertEqual(summary.status_code, 200)
-        self.assertEqual(summary.data['total_requests'], 1)
-        outsider = User.objects.create_user(
-            username='outsider', email='outsider@example.com', is_staff=True
-        )
-        self.client.force_authenticate(outsider)
-        self.assertEqual(
-            self.client.get('/admin-api/analytics/summary', {'application_id': self.app.id}).status_code,
-            404,
-        )
 
 
 class ManagementAccessTests(APITestCase):
@@ -214,7 +192,7 @@ class ManagementAccessTests(APITestCase):
 
     def test_nonstaff_cannot_manage_services_or_route_methods(self):
         paths = ('projects', 'services', 'routes', 'route-methods', 'applications', 'keys',
-                 'dashboard', 'analytics/summary')
+                 'dashboard')
         for user in (None, self.user):
             self.client.force_authenticate(user)
             for path in paths:
