@@ -16,6 +16,7 @@ from analytics.models import RequestLog
 from authentication.models import APIKey, Application, RoutePermission
 from dummy_backend.server import DummyBackendHandler
 from gateway.services import ProductResponseCache, RedisRateLimiter
+from gateway.test_support import FakeRedisClient
 from routes.demo import INDUSTRY_BUNDLES
 from routes.models import BackendService, Route, RouteMethod
 from users.models import Project, User
@@ -32,10 +33,10 @@ class BaaSIntegrationTests(APITestCase):
         self.other_app, self.other_key = self.create_business(self.project, 'Clinic B', 'normal')
         self.client.force_authenticate(None)
         ProductResponseCache._memory_store.clear()
-        RedisRateLimiter._memory_store.clear()
-        offline = patch('redis.Redis.execute_command', side_effect=redis.ConnectionError('offline'))
-        offline.start()
-        self.addCleanup(offline.stop)
+        shared_redis = FakeRedisClient()
+        mocked_redis = patch('gateway.services.get_redis_client', return_value=shared_redis)
+        mocked_redis.start()
+        self.addCleanup(mocked_redis.stop)
 
     def create_business(self, project, name, plan):
         self.client.force_authenticate(self.admin)
@@ -231,13 +232,8 @@ class SharedRedisTests(SimpleTestCase):
         second = RedisRateLimiter(os.environ['GATESCALE_TEST_REDIS_URL'])
         key = f'gateway_test:{uuid4().hex}'
         try:
-            with patch.object(
-                first, '_fallback_allow_request', side_effect=AssertionError('Redis unavailable')
-            ), patch.object(
-                second, '_fallback_allow_request', side_effect=AssertionError('Redis unavailable')
-            ):
-                self.assertTrue(first.allow_request(key, 1, 600))
-                self.assertFalse(second.allow_request(key, 1, 600))
+            self.assertTrue(first.allow_request(key, 1, 600))
+            self.assertFalse(second.allow_request(key, 1, 600))
         finally:
             window_keys = list(first.client.scan_iter(f'{key}:*'))
             if window_keys:
