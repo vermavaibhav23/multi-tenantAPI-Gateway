@@ -45,7 +45,10 @@ class GatewayProxyView(APIView):
         route = RouteResolver.get_route_for_request(project, request.method, route_path)
         if not route:
             return reject('Route not found.', 404)
-        method_policy = route._cached_method_policies.get(request.method)
+        # Method/JWT policies stay in primary MySQL; the Redis cache stores routing only.
+        method_policy = RouteMethod.objects.filter(
+            route_id=route.pk, method=request.method
+        ).values_list('auth_policy', flat=True).first()
         if method_policy is None:
             return reject('Method not allowed for this route.', 405, route)
         if not request.api_key.can_access(route):
@@ -80,22 +83,27 @@ class GatewayProxyView(APIView):
             return reject('Backend destination is not allowed.', 403, route)
         cache_client = ProductResponseCache()
         cache_key = None
-        project_cache_prefix = f'gateway_cache:v2:{project.id}:'
+        app_cache_prefix = f'gateway_cache:v3:{application.id}:'
         cache_allowed = (
             request.method == 'GET' and method_policy == RouteMethod.AUTH_API_KEY_ONLY
             and urlsplit(target_url).hostname in settings.GATEWAY_CACHEABLE_BACKEND_HOSTS
             and not request.headers.get('Authorization') and not request.headers.get('Cookie')
+            and not getattr(request.user, 'is_authenticated', False)
+            and not request.body
         )
         if cache_allowed:
-            customer_id = request.user.id if getattr(request, 'user', None) and request.user.is_authenticated else 'anonymous'
             query_string = request.META.get('QUERY_STRING', '')
             cache_target_url = f'{target_url}?{query_string}' if query_string else target_url
-            cache_key = f'{project_cache_prefix}{application.id}:{customer_id}:{request.method}:{cache_target_url}'
+            # This key is only safe for approved non-personalized, API-key-only GETs.
+            cache_key = f'{app_cache_prefix}{cache_target_url}'
             cached = cache_client.get(cache_key)
             if cached is not None:
                 return HttpResponse(cached, status=200, content_type='application/json')
         elif request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
-            cache_client.invalidate_prefix(project_cache_prefix)
+            # Mutations of shared project services can affect all applications.
+            # Invalidate each application's cached GETs, not just the writer's.
+            for app_id in project.applications.values_list('id', flat=True):
+                cache_client.invalidate_prefix(f'gateway_cache:v3:{app_id}:')
 
         response = GatewayRequestProxy.proxy(request, target_url)
 
