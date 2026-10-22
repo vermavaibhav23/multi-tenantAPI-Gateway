@@ -1,9 +1,12 @@
 x-gateway-env: &gateway-env
   USE_SQLITE: "False"
-  MYSQL_HOST: db
-  MYSQL_DATABASE: gateway_db
-  MYSQL_USER: gateway
-  MYSQL_PASSWORD: gateway
+  MYSQL_HOST: mysql-router
+  MYSQL_PORT: "6446"
+  MYSQL_READ_PORT: "6447"
+  MYSQL_CLUSTER_ENABLED: "True"
+  MYSQL_DATABASE: "${MYSQL_DATABASE:-gateway_db}"
+  MYSQL_USER: "${MYSQL_USER:-gateway}"
+  MYSQL_PASSWORD: "${MYSQL_PASSWORD:-gateway}"
   REDIS_CLUSTER_ENABLED: "True"
   REDIS_CLUSTER_URL: redis://redis-node-1:6379
   DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:-dev-secret-key-change-me}"
@@ -15,8 +18,8 @@ x-gateway-base: &gateway-base
   build: .
   environment: *gateway-env
   depends_on:
-    db:
-      condition: service_healthy
+    mysql-router:
+      condition: service_started
     redis-cluster-init:
       condition: service_completed_successfully
   networks:
@@ -46,6 +49,28 @@ x-redis-node: &redis-node
     retries: 30
   restart: unless-stopped
 
+# Group Replication requirements shared by every MySQL instance.
+x-mysql-node-env: &mysql-node-env
+  MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-root}"
+  MYSQL_ROOT_HOST: "%"
+
+x-mysql-node: &mysql-node
+  image: mysql:8.0
+  environment: *mysql-node-env
+  command: ["mysqld"]
+  restart: unless-stopped
+  # Group Replication needs GTIDs and row-based binary logging on every node.
+  # Each node uses 3306 for SQL and 33061 for XCom (internal only).
+  volumes: []
+  networks:
+    - default
+  healthcheck:
+    test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$MYSQL_ROOT_PASSWORD --silent"]
+    interval: 5s
+    timeout: 3s
+    retries: 45
+    start_period: 20s
+
 services:
   nginx:
     image: nginx:1.27-alpine
@@ -60,7 +85,11 @@ services:
 
   api-gateway-migrate:
     <<: *gateway-base
-    command: python manage.py migrate
+    # Router starts after cluster bootstrap, but allow time for its first listener.
+  command: >
+    sh -c 'i=0; until python manage.py migrate; do
+      i=$((i+1)); if [ "$i" -ge 30 ]; then exit 1; fi;
+      sleep 3; done'
 
   api-gateway-1:
     <<: *gateway-base
@@ -179,23 +208,60 @@ services:
     expose:
       - "8000"
 
-  db:
-    image: mysql:8.0
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    restart: unless-stopped
+  # Three independent data directories. Do NOT mount the old mysql_data volume
+  # into a GR node: migrate existing installations from a verified SQL backup.
+  mysql-1:
+    <<: *mysql-node
+    command: ["mysqld", "--server-id=1", "--report-host=mysql-1", "--gtid-mode=ON", "--enforce-gtid-consistency=ON", "--log-bin=mysql-bin", "--binlog-format=ROW", "--log-replica-updates=ON", "--group-replication-consistency=BEFORE_AND_AFTER"]
     environment:
-      MYSQL_DATABASE: gateway_db
-      MYSQL_USER: gateway
-      MYSQL_PASSWORD: gateway
-      MYSQL_ROOT_PASSWORD: root
-    ports:
-      - "3306:3306"
+      <<: *mysql-node-env
+      MYSQL_DATABASE: "${MYSQL_DATABASE:-gateway_db}"
+      MYSQL_USER: "${MYSQL_USER:-gateway}"
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:-gateway}"
     volumes:
-      - mysql_data:/var/lib/mysql
+      - mysql_1_data:/var/lib/mysql
+
+  mysql-2:
+    <<: *mysql-node
+    command: ["mysqld", "--server-id=2", "--report-host=mysql-2", "--gtid-mode=ON", "--enforce-gtid-consistency=ON", "--log-bin=mysql-bin", "--binlog-format=ROW", "--log-replica-updates=ON", "--group-replication-consistency=BEFORE_AND_AFTER"]
+    volumes:
+      - mysql_2_data:/var/lib/mysql
+
+  mysql-3:
+    <<: *mysql-node
+    command: ["mysqld", "--server-id=3", "--report-host=mysql-3", "--gtid-mode=ON", "--enforce-gtid-consistency=ON", "--log-bin=mysql-bin", "--binlog-format=ROW", "--log-replica-updates=ON", "--group-replication-consistency=BEFORE_AND_AFTER"]
+    volumes:
+      - mysql_3_data:/var/lib/mysql
+
+  mysql-cluster-init:
+    # Oracle's community-server image bundles MySQL Shell (mysqlsh).
+    image: container-registry.oracle.com/mysql/community-server:8.0
+    entrypoint: ["mysqlsh", "--js", "--file=/cluster/bootstrap.js"]
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:-root}"
+    volumes:
+      - ./mysql/bootstrap.js:/cluster/bootstrap.js:ro
+    depends_on:
+      mysql-1:
+        condition: service_healthy
+      mysql-2:
+        condition: service_healthy
+      mysql-3:
+        condition: service_healthy
+    restart: "no"
+
+  mysql-router:
+    image: mysql/mysql-router:8.0
+    environment:
+      MYSQL_HOST: mysql-1
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: "${MYSQL_ROOT_PASSWORD:-root}"
+      MYSQL_INNODB_CLUSTER_MEMBERS: "3"
+    depends_on:
+      mysql-cluster-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
 
   redis-node-1:
     <<: *redis-node
@@ -263,7 +329,11 @@ services:
     restart: "no"
 
 volumes:
+  # Former mysql_data volumes are intentionally NOT deleted by this upgrade.
   mysql_data:
+  mysql_1_data:
+  mysql_2_data:
+  mysql_3_data:
   redis_node_1_data:
   redis_node_2_data:
   redis_node_3_data:
