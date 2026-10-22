@@ -17,7 +17,7 @@ from .redis_client import get_redis_client
 
 
 logger = logging.getLogger(__name__)
-ROUTE_CACHE_TTL_SECONDS = 30
+ROUTE_CACHE_TTL_SECONDS = 60
 
 # Abort stale cache fills if route configuration changed during DB loading.
 _PUBLISH_IF_CURRENT = """
