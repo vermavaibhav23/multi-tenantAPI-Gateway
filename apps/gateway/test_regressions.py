@@ -8,7 +8,8 @@ from django.test import RequestFactory, override_settings
 from rest_framework.test import APITestCase
 
 from authentication.models import APIKey, Application, RoutePermission
-from gateway.services import GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RouteResolver
+from gateway.services import GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RateLimitBackendUnavailable, RouteResolver
+from gateway.test_support import FakeRedisClient
 from routes.destinations import validate_target_url
 from routes.models import BackendService, Route, RouteMethod
 from users.models import Project, User
@@ -36,11 +37,10 @@ class GatewayRegressionTests(APITestCase):
         RouteMethod.objects.create(route=self.route, method='POST')
         cache.clear()
         ProductResponseCache._memory_store.clear()
-        RedisRateLimiter._memory_store.clear()
-        offline = patch('redis.Redis.execute_command',
-                        side_effect=redis.ConnectionError('offline'))
-        offline.start()
-        self.addCleanup(offline.stop)
+        shared_redis = FakeRedisClient()
+        mocked_redis = patch('gateway.services.get_redis_client', return_value=shared_redis)
+        mocked_redis.start()
+        self.addCleanup(mocked_redis.stop)
 
     def get(self, key=None):
         return self.client.get('/gateway/echo', HTTP_X_API_KEY=key or self.key)
@@ -140,13 +140,40 @@ class GatewayRegressionTests(APITestCase):
             self.assertFalse(client.call_args.kwargs['follow_redirects'])
             self.assertFalse(client.call_args.kwargs['trust_env'])
 
-    def test_redis_eval_failure_uses_fallback(self):
+    def test_redis_eval_failure_is_fail_closed(self):
         limiter = RedisRateLimiter()
-        with patch.object(limiter.client, 'ping', return_value=True), patch.object(
-            limiter.client, 'eval', side_effect=redis.ConnectionError('offline'),
-        ):
-            self.assertTrue(limiter.allow_request('test', 1, 600))
-            self.assertFalse(limiter.allow_request('test', 1, 600))
+        with patch.object(limiter.client, 'eval', side_effect=redis.ConnectionError('offline')):
+            with self.assertRaises(RateLimitBackendUnavailable):
+                limiter.allow_request('test', 1, 600)
+
+    def test_gateway_returns_503_and_does_not_proxy_if_redis_goes_down(self):
+        with patch('gateway.services.get_redis_client', side_effect=redis.ConnectionError('offline')), patch(
+            'gateway.views.GatewayRequestProxy.proxy',
+        ) as proxy:
+            response = self.get()
+            self.assertEqual(response.status_code, 503)
+            self.assertIn('Rate limiting temporarily unavailable', response.json()['detail'])
+            proxy.assert_not_called()
+
+    def test_gateway_recovers_when_shared_redis_recovers(self):
+        shared_redis = FakeRedisClient()
+        with patch('gateway.services.get_redis_client', return_value=shared_redis), patch(
+            'gateway.views.GatewayRequestProxy.proxy',
+            return_value=httpx.Response(200, json={'ok': True}),
+        ) as proxy:
+            with patch.object(shared_redis, 'eval', side_effect=redis.ConnectionError('offline')):
+                self.assertEqual(self.get().status_code, 503)
+            self.assertEqual(self.get().status_code, 200)
+            proxy.assert_called_once()
+
+    def test_actual_limit_exceeded_is_still_429(self):
+        with patch.dict(Application.PLAN_LIMITS, {Application.PLAN_NORMAL: (1, 60)}), patch(
+            'gateway.views.GatewayRequestProxy.proxy',
+            return_value=httpx.Response(200, json={'ok': True}),
+        ) as proxy:
+            self.assertEqual(self.get().status_code, 200)
+            self.assertEqual(self.get().status_code, 429)
+            proxy.assert_called_once()
 
     def test_redis_eval_success_is_enforced(self):
         limiter = RedisRateLimiter()
