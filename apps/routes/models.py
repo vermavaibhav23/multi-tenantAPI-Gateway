@@ -46,6 +46,15 @@ class Route(models.Model):
         ]
         unique_together = [('project', 'base_path')]
 
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+        if (not self.base_path or not self.base_path.startswith('/')
+                or self.base_path == '/' or self.base_path.count('/') != 1):
+            raise ValidationError(
+                'Route base_path must have one segment, e.g. /doctors.'
+            )
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.base_path
 
