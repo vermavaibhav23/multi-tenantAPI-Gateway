@@ -6,7 +6,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from gateway.services import RedisRateLimiter
+from gateway.services import RedisRateLimiter, RateLimitBackendUnavailable
 from .models import ApplicationUser
 from .serializers import (
     ApplicationUserCreateSerializer, ApplicationUserSerializer,
@@ -70,16 +70,18 @@ class ClientRegisterView(APIView):
         email = serializer.validated_data['email']
 
         # Protect a shared registration endpoint from bulk account creation.
-        # RedisRateLimiter has the project's usual per-process fallback if Redis
-        # is unavailable; production should also rate-limit at the edge.
+        # Fail closed if Redis cannot enforce the shared registration limits.
         email_digest = hashlib.sha256(email.encode('utf-8')).hexdigest()
-        limiter = RedisRateLimiter()
-        if not limiter.allow_request(f'client_register:app:{application.pk}', 100, 3600):
-            return Response({'detail': 'Too many registration attempts.'}, status=429)
-        if not limiter.allow_request(
-            f'client_register:email:{application.pk}:{email_digest}', 5, 3600
-        ):
-            return Response({'detail': 'Too many registration attempts.'}, status=429)
+        try:
+            limiter = RedisRateLimiter()
+            if not limiter.allow_request(f'client_register:app:{application.pk}', 100, 3600):
+                return Response({'detail': 'Too many registration attempts.'}, status=429)
+            if not limiter.allow_request(
+                f'client_register:email:{application.pk}:{email_digest}', 5, 3600
+            ):
+                return Response({'detail': 'Too many registration attempts.'}, status=429)
+        except RateLimitBackendUnavailable:
+            return Response({'detail': 'Rate limiting temporarily unavailable. Please retry later.'}, status=503)
 
         if ApplicationUser.objects.filter(application=application, email=email).exists():
             return Response({'email': ['This email is already registered.']}, status=400)
@@ -118,8 +120,11 @@ class ClientLoginView(APIView):
         # password guessing without revealing whether the email exists.
         hashed_email = hashlib.sha256(email.encode('utf-8')).hexdigest()
         key = f'client_login:{application.pk}:{hashed_email}'
-        if not RedisRateLimiter().allow_request(key, 10, 300):
-            return Response({'detail': 'Too many login attempts.'}, status=429)
+        try:
+            if not RedisRateLimiter().allow_request(key, 10, 300):
+                return Response({'detail': 'Too many login attempts.'}, status=429)
+        except RateLimitBackendUnavailable:
+            return Response({'detail': 'Rate limiting temporarily unavailable. Please retry later.'}, status=503)
         user = ApplicationUser.objects.filter(
             application=application, email=email, is_active=True
         ).first()
