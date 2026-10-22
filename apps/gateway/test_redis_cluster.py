@@ -9,7 +9,7 @@ import redis
 from django.test import SimpleTestCase, override_settings
 
 from gateway.redis_client import _cached_client, get_redis_client
-from gateway.services import ProductResponseCache, RedisRateLimiter
+from gateway.services import ProductResponseCache, RedisRateLimiter, RateLimitBackendUnavailable
 
 
 class RedisClusterClientTests(SimpleTestCase):
@@ -17,7 +17,6 @@ class RedisClusterClientTests(SimpleTestCase):
         _cached_client.cache_clear()
         self.addCleanup(_cached_client.cache_clear)
         ProductResponseCache._memory_store.clear()
-        RedisRateLimiter._memory_store.clear()
 
     @override_settings(REDIS_CLUSTER_ENABLED=True, REDIS_CLUSTER_URL='redis://redis-node-1:6379')
     @patch('gateway.redis_client.RedisCluster.from_url')
@@ -69,12 +68,19 @@ class RedisClusterClientTests(SimpleTestCase):
         self.assertEqual(cluster.eval.call_args.args[2], 'gateway_rate:application:3:2')
 
     @override_settings(REDIS_CLUSTER_ENABLED=True)
-    def test_initial_cluster_outage_keeps_existing_limiter_fallback(self):
+    def test_initial_cluster_outage_fails_closed(self):
         with patch('gateway.services.get_redis_client', side_effect=redis.ConnectionError):
+            with self.assertRaises(RateLimitBackendUnavailable):
+                RedisRateLimiter()
+
+    @override_settings(REDIS_CLUSTER_ENABLED=True)
+    def test_primary_unreachable_rejects_instead_of_using_local_counter(self):
+        cluster = MagicMock()
+        cluster.eval.side_effect = redis.ConnectionError('primary unreachable')
+        with patch('gateway.services.get_redis_client', return_value=cluster):
             limiter = RedisRateLimiter()
-            self.assertIsNone(limiter.client)
-            self.assertTrue(limiter.allow_request('offline', 1, 60))
-            self.assertFalse(limiter.allow_request('offline', 1, 60))
+            with self.assertRaises(RateLimitBackendUnavailable):
+                limiter.allow_request('gateway_rate:application:12', 100, 60)
 
 
 @skipUnless(os.getenv('GATESCALE_TEST_REDIS_CLUSTER_URL'),
