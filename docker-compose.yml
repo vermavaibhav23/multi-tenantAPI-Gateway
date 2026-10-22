@@ -60,7 +60,7 @@ x-mysql-node: &mysql-node
   command: ["mysqld"]
   restart: unless-stopped
   # Group Replication needs GTIDs and row-based binary logging on every node.
-  # Each node uses 3306 for SQL and 33061 for XCom (internal only).
+  # MYSQL Group Replication communication uses SQL port 3306.
   volumes: []
   networks:
     - default

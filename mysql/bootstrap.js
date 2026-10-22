@@ -31,7 +31,7 @@ try {
     dba.configureInstance(member('mysql-1'), {restart: false});
     cluster = dba.createCluster('servlink', {
         multiPrimary: false,
-        localAddress: 'mysql-1:33061',
+        communicationStack: 'MYSQL',
         exitStateAction: 'READ_ONLY'
     });
 }
@@ -45,8 +45,7 @@ for (const host of ['mysql-2', 'mysql-3']) {
         dba.configureInstance(member(host), {restart: false});
         cluster.addInstance(member(host), {
             recoveryMethod: 'clone',
-            localAddress: host + ':33061',
-            waitRecovery: 1
+             waitRecovery: 1
         });
     } else if (entry[1].status !== 'ONLINE') {
         print('Rejoining existing member ' + host);

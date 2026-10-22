@@ -100,8 +100,8 @@ cross-application invalidation for shared backend services.
 The default `docker-compose.yml` now deploys three **MySQL 8.0 nodes**,
 a **MySQL Shell bootstrap job**, and **MySQL Router**. Each MySQL node has
 its own Docker volume and its own Docker IP. They all listen on internal port
-`3306`, with `33061` reserved for Group Replication communication (not
-published to the host). MySQL Shell's AdminAPI creates/joins the single-primary
+`3306`, using the MySQL Group Replication `MYSQL` communication stack
+(so no separate 33061 port is needed). MySQL Shell's AdminAPI creates/joins the single-primary
 cluster. The nodes coordinate writes through Group Replication.
 
 - `mysql-1:3306`: starts as primary, accepts reads and writes.
