@@ -36,6 +36,9 @@ class BaaSIntegrationTests(APITestCase):
         mocked_redis = patch('gateway.services.get_redis_client', return_value=shared_redis)
         mocked_redis.start()
         self.addCleanup(mocked_redis.stop)
+        route_cache_redis = patch('gateway.route_cache.get_redis_client', return_value=shared_redis)
+        route_cache_redis.start()
+        self.addCleanup(route_cache_redis.stop)
 
     def create_business(self, project, name, plan):
         self.client.force_authenticate(self.admin)
