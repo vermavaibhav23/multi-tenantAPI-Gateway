@@ -12,7 +12,7 @@ from rest_framework.test import APITestCase
 from gateway.redis_client import _cached_client, get_redis_client
 from gateway.services import ProductResponseCache, RedisRateLimiter, RateLimitBackendUnavailable
 from gateway.route_cache import (
-    _read_project_routes, invalidate_project_routes,
+    _read_route, invalidate_route,
 )
 from gateway.services import RouteResolver
 from routes.models import BackendService, Route, RouteMethod
@@ -136,11 +136,11 @@ class LiveRouteSnapshotTests(APITestCase):
             backend_service=service,
         )
         RouteMethod.objects.create(route=self.route, method='GET')
-        invalidate_project_routes(self.project.id)
-        self.addCleanup(invalidate_project_routes, self.project.id)
+        invalidate_route(self.project.id, '/doctors')
+        self.addCleanup(invalidate_route, self.project.id, '/doctors')
 
     def test_redis_cluster_route_hit_and_committed_route_disable(self):
-        with patch('gateway.route_cache._read_project_routes', wraps=_read_project_routes) as loader:
+        with patch('gateway.route_cache._read_route', wraps=_read_route) as loader:
             first = RouteResolver.get_route_for_request(self.project, 'GET', '/doctors/12')
             second = RouteResolver.get_route_for_request(self.project, 'GET', '/doctors/34')
             self.assertEqual(loader.call_count, 1)
