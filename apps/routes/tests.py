@@ -163,3 +163,61 @@ class RouteCreationTests(APITestCase):
                     'base_path': bad_path, 'backend_service': service.id,
                 }, format='json')
                 self.assertEqual(response.status_code, 400)
+
+    def test_patch_backend_url_and_route_invalidate_only_affected_entries(self):
+        from unittest.mock import patch
+        from gateway.route_cache import invalidate_route
+        service = BackendService.objects.create(
+            project=self.project, name='Products', base_url='http://fashion-product-service:8000')
+        route = Route.objects.create(project=self.project, name='Products',
+                                     base_path='/products', backend_service=service)
+        with patch('gateway.route_cache.invalidate_route') as invalidate:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.patch(
+                    f'/admin-api/services/{service.pk}', {'is_active': False}, format='json')
+            self.assertEqual(response.status_code, 200, response.data)
+            invalidate.assert_called_with(self.project.pk, '/products')
+
+        with patch('gateway.route_cache.invalidate_route') as invalidate:
+            with self.captureOnCommitCallbacks(execute=True):
+                response = self.client.patch(
+                    f'/admin-api/routes/{route.pk}', {'base_path': '/catalog'}, format='json')
+            self.assertEqual(response.status_code, 200, response.data)
+            self.assertEqual(invalidate.call_count, 2)
+
+    def test_patch_route_method_policy_and_permission(self):
+        from authentication.models import Application
+        app = Application.objects.create(project=self.project, name='Hospital App')
+        route = self.add_route()
+        policy = route.method_policies.get(method='GET')
+        result = self.client.patch(
+            f'/admin-api/route-methods/{policy.pk}',
+            {'auth_policy': RouteMethod.AUTH_API_KEY_AND_JWT}, format='json')
+        self.assertEqual(result.status_code, 200, result.data)
+        policy.refresh_from_db()
+        self.assertEqual(policy.auth_policy, RouteMethod.AUTH_API_KEY_AND_JWT)
+
+        create = self.client.post('/admin-api/route-permissions', {
+            'application': app.pk, 'route': route.pk, 'is_active': True}, format='json')
+        self.assertEqual(create.status_code, 201, create.data)
+        update = self.client.patch(
+            f"/admin-api/route-permissions/{create.data['id']}",
+            {'is_active': False}, format='json')
+        self.assertEqual(update.status_code, 200, update.data)
+        self.assertFalse(update.data['is_active'])
+
+    def test_admin_patch_cannot_move_route_to_foreign_service(self):
+        route = self.add_route()
+        other = Project.objects.create(owner=self.owner, name='Other', slug='another')
+        foreign = BackendService.objects.create(project=other, name='Foreign')
+        result = self.client.patch(
+            f'/admin-api/routes/{route.pk}', {'backend_service': foreign.pk}, format='json')
+        self.assertEqual(result.status_code, 400)
+
+    def test_admin_patch_requires_owner(self):
+        service = BackendService.objects.create(project=self.project, name='Safe')
+        outsider = User.objects.create_user(username='outsider', email='outsider@example.com')
+        self.client.force_authenticate(user=outsider)
+        response = self.client.patch(
+            f'/admin-api/services/{service.pk}', {'is_active': False}, format='json')
+        self.assertIn(response.status_code, (403, 404))

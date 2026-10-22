@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import BackendService, Route, RouteMethod
+from authentication.models import RoutePermission
 from .destinations import validate_backend_base_url
 
 
@@ -62,3 +63,10 @@ class RouteSerializer(serializers.ModelSerializer):
 
     def get_downstream_service(self, obj):
         return obj.backend_service.slug if obj.backend_service else ''
+
+
+class RoutePermissionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RoutePermission
+        fields = ('id', 'application', 'route', 'is_active', 'created_at')
+        read_only_fields = ('id', 'created_at')
