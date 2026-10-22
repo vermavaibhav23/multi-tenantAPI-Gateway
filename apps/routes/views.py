@@ -146,8 +146,10 @@ class RouteDetailView(generics.RetrieveUpdateAPIView):
                                          partial=kwargs.get('partial', False))
         serializer.is_valid(raise_exception=True)
         service = serializer.validated_data.get('backend_service', route.backend_service)
-        if service is not None and (service.project_id != route.project_id or not service.is_active):
-            raise ValidationError({'backend_service': 'Service must be active and in the same project.'})
+        if service is not None and service.project_id != route.project_id:
+            raise ValidationError({'backend_service': 'Service must belong to the same project.'})
+        if 'backend_service' in serializer.validated_data and service is not None and not service.is_active:
+            raise ValidationError({'backend_service': 'A newly selected service must be active.'})
         serializer.save()
         return Response(serializer.data)
 
