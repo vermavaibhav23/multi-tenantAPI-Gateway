@@ -4,11 +4,10 @@ import time
 import httpx
 import redis
 from django.conf import settings
-from django.db.models import Q
 from django.utils import timezone
 
 from routes.destinations import validate_target_url
-from routes.models import Route
+from .route_cache import get_project_routes, route_from_snapshot
 
 from .redis_client import get_redis_client
 
@@ -57,18 +56,12 @@ class RouteResolver:
     @staticmethod
     def get_route_for_request(project, method, path):
         normalized = RouteResolver.normalize_path(path)
-        # Read current configuration on every request, across all gateway workers.
-        routes = Route.objects.select_related('backend_service').filter(
-            Q(backend_service__isnull=True)
-            | Q(backend_service__project=project, backend_service__is_active=True),
-            project=project, is_active=True,
-        )
+        entries = get_project_routes(project.id)
         # Match the longest full-segment prefix, independent of HTTP method.
-        # A disallowed method must not fall through to a shorter public prefix.
-        for route in sorted(routes, key=lambda item: len(RouteResolver.normalize_path(item.base_path)), reverse=True):
-            prefix = RouteResolver.normalize_path(route.base_path)
+        for entry in entries:
+            prefix = RouteResolver.normalize_path(entry['path'])
             if prefix == normalized or normalized.startswith(f'{prefix}/'):
-                return route
+                return route_from_snapshot(project.id, entry)
         return None
 
 
