@@ -1,8 +1,18 @@
 # ServLink — Multi-Tenant Backend-as-a-Service API Gateway
 
-ServLink is a Django REST Framework gateway that lets business applications share domain-specific demo microservices (Healthcare, Banking, E-commerce). It uses API keys to identify applications, Redis Cluster-backed fixed-window rate limiting, optional JWT verification on configured HTTP methods, safe GET caching, request analytics, and NGINX across three gateway replicas.
+ServLink is a Django REST Framework gateway that lets business applications share domain-specific demo microservices (Healthcare, Banking, E-commerce). It uses API keys to identify applications, Redis Cluster-backed fixed-window rate limiting, optional JWT verification on configured HTTP methods, safe GET caching, and NGINX across three gateway replicas.
 
 **Scope:** The domain backend containers remain dummy request-echo services. ServLink now includes a shared, application-isolated **client-user authentication component** in the Django gateway deployment. It authenticates application users and issues scoped-to-application JWTs; it does not yet provide roles/RBAC, actual patients/bookings/payments, or a separately deployed AuthService container.
+
+**Database write reduction:** API-key validation no longer updates `last_used_at` on
+every request, and the gateway no longer inserts per-request `RequestLog` rows.
+The analytics summary endpoint has been removed; `GET /admin-api/dashboard`
+still returns project configuration counts, without traffic counts. Schema
+migrations `authentication.0010` and `analytics.0006` drop the obsolete
+column and table, respectively. **Back up existing databases first:** deleting
+the request-log table permanently removes all historical request records.
+API key expiry, revocation, application identity and route-permission checks
+still use MySQL; route configuration caching is not implemented yet.
 
 ## Data model (routing schema)
 
@@ -16,7 +26,6 @@ ServLink is a Django REST Framework gateway that lets business applications shar
 | RouteMethod | id, route, method, auth_policy | `(route, method)` |
 | RoutePermission | id, application, route, is_active | `(application, route)` |
 | ApplicationUser | id, application, email, password_hash, is_active, token_version | `(application, email)` |
-| RequestLog | project, application, route, client_user, method, status, latency, etc. | analytics/history |
 
 `BackendService → Route` is 1:N: one DoctorService can expose `/doctors` and `/specialties`, each with its own Route while sharing the same BackendService base URL. `Route → RouteMethod` is 1:N: one `/doctors` Route can expose GET (API key only) and DELETE (API key plus JWT) with independent policies. All routes in the same project must have distinct public base paths.
 
@@ -31,7 +40,7 @@ Existing `slug`, timestamp, description and key revocation fields are retained f
 3. Look up `RouteMethod(route, request.method)`. If absent, return 405 without trying another prefix. If its `auth_policy` is `api_key_and_jwt`, verify a **client-user** bearer token signed by the shared client authentication component, and require the JWT application identity to match the validated API key. ServLink staff JWTs are not accepted for client routes.
 4. Apply RoutePermission (if present), per-Application Redis fixed-window rate limit, safe GET cache rules and backend destination-origin allowlist.
 5. Strip `/gateway` from the incoming path and forward the original HTTP method, body and query string to `BackendService.base_url + entire remaining request path`. Strip the raw API key, bearer token and spoofable identity headers; attach verified `X-GateScale-Application-ID` and (when authenticated) `X-GateScale-Client-User-ID`. Downstream services must be protected from direct untrusted network access.
-6. Return the downstream status/body and record RequestLog analytics.
+6. Return the downstream status/body without inserting a per-request database log.
 
 Example: `GET /gateway/doctors/456` with Hospital A's API key, a Route whose `base_path=/doctors`, and DoctorService whose `base_url=http://healthcare-doctor-service:8000` is sent to `http://healthcare-doctor-service:8000/doctors/456`.
 
@@ -114,8 +123,7 @@ Admin APIs use a valid ServLink staff JWT, obtained from `POST /admin-api/auth/l
 | `POST /admin-api/application-users/<id>/disable` | Staff disables an application user and immediately invalidates their tokens |
 | `POST /gateway/auth/register` | Register an application user via the application backend's API key |\n| `POST /admin-api/keys` | Rotate application's only API key, returning the new secret once |
 | `POST /admin-api/keys/<id>/revoke` | Revoke application API key |
-| `GET /admin-api/dashboard` | Owner-scoped project summary |
-| `GET /admin-api/analytics/summary` | Owner-scoped request statistics (optional `application_id`) |
+| `GET /admin-api/dashboard` | Owner-scoped project configuration counts (no traffic analytics) |
 
 Register the internal microservice origin first, then one or more public routes (use actual IDs returned by your server):
 
@@ -191,7 +199,7 @@ The public gateway is normally `http://localhost:8000`. The downstream demo serv
 
 ## Migration from method-specific Routes
 
-**Back up MySQL/SQLite before applying these migrations.** The new migration collapses old GET/POST/PUT/PATCH/DELETE Route rows with the same project and base path into a single Route and creates RouteMethod records for enabled methods, keeping each former method's JWT policy. It redirects RequestLog references to the surviving Route.
+**Back up MySQL/SQLite before applying these migrations.** The new migration collapses old GET/POST/PUT/PATCH/DELETE Route rows with the same project and base path into a single Route and creates RouteMethod records for enabled methods, keeping each former method's JWT policy. The historical migration also updated references in the old RequestLog table, which has since been removed by analytics migration 0006.
 
 To avoid silent access widening, it intentionally fails if previously method-specific RoutePermission grants would become broader, or if old route records for one base path point to different destinations/backend services. Review and normalize those cases manually first. Project names and service names must also become unique as described above.
 
@@ -289,7 +297,7 @@ Authorization: Bearer <client_access_jwt>
 
 The gateway validates signature (HS256 with independent `CLIENT_JWT_SIGNING_KEY`), expiry, token type, expected issuer `servlink-client-auth`, audience `servlink-gateway`, the JWT's `application_id` matching the API key, and the user still being active. Token lifetime: **15-minute access**, **7-day refresh**. Server-side secrets must not be embedded in a browser frontend; the application's trusted backend holds the API key and can relay the user's token.
 
-The platform staff JWT uses a **different signing domain** and **cannot** authenticate JWT-protected client routes. The gateway strips incoming bearer/API-key credentials before forwarding and injects verified identity headers for the isolated dummy services. RequestLog optionally records `client_user_id`.
+The platform staff JWT uses a **different signing domain** and **cannot** authenticate JWT-protected client routes. The gateway strips incoming bearer/API-key credentials before forwarding and injects verified identity headers for the isolated dummy services.
 
 **Security / limitations:** The shared module is an implementation of basic authentication, not an independently hosted or fully hardened identity provider. RBAC, JWT role/scope enforcement, business resource ownership, self-service enrollment, password recovery and refresh-token rotation/revocation are future enhancements. In particular, a valid client JWT proves who a user is, **not** that they are allowed to DELETE a doctor. Never expose real sensitive operations until authorization is implemented in the microservice or at the gateway. Use a strong independently generated `CLIENT_JWT_SIGNING_KEY` on **all** gateway replicas, enable TLS, and protect the private service network. Django's development signing-key fallback is not suitable for production.
 
