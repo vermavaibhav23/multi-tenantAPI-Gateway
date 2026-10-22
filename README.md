@@ -58,7 +58,7 @@ matches `/doctors/456`, but not `/doctors-extra`. The gateway appends the
   `RouteMethod` database reads. The cached data is **project-scoped**, not
   keyed by full request paths like `/doctors/456`.
 - **Miss:** Load the snapshot with `select_related` and `prefetch_related`
-  from primary MySQL, then JSON-serialize to Redis with a 30-second TTL.
+  from primary MySQL, then JSON-serialize to Redis with a 60-second TTL.
 - **Invalidation:** On committed model `save()`/`delete()` changes to
   `Route`, `BackendService` or `RouteMethod`, Django signals increment a
   project-scoped generation and delete its cached snapshot. A Redis Lua
@@ -76,7 +76,7 @@ matches `/doctors/456`, but not `/doctors-extra`. The gateway appends the
 bypass Django `save()/delete()` signals. For such operations call
 `gateway.route_cache.invalidate_project_routes(project_id)` **after the
 database transaction commits** for every affected project. When Redis
-invalidation itself fails, snapshots can remain stale until their 30-second
+invalidation itself fails, snapshots can remain stale until their 60-second
 TTL expires; this is a best-effort configuration cache, **not an absolute
 immediate revocation mechanism**. In security-critical deployments use a
 stronger invalidation/fail-closed strategy. For performance, batch/admin
