@@ -25,6 +25,9 @@ class ClientUserAuthenticationTests(APITestCase):
         mocked_redis = patch('gateway.services.get_redis_client', return_value=shared_redis)
         mocked_redis.start()
         self.addCleanup(mocked_redis.stop)
+        route_cache_redis = patch('gateway.route_cache.get_redis_client', return_value=shared_redis)
+        route_cache_redis.start()
+        self.addCleanup(route_cache_redis.stop)
         self.admin = User.objects.create_user(
             username='owner', email='owner@example.com',
             password='AdminSecret123!', is_staff=True,
