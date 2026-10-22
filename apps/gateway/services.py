@@ -7,7 +7,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from routes.destinations import validate_target_url
-from .route_cache import get_project_routes, route_from_snapshot
+from .route_cache import get_route, route_from_snapshot
 
 from .redis_client import get_redis_client
 
@@ -56,13 +56,12 @@ class RouteResolver:
     @staticmethod
     def get_route_for_request(project, method, path):
         normalized = RouteResolver.normalize_path(path)
-        entries = get_project_routes(project.id)
-        # Match the longest full-segment prefix, independent of HTTP method.
-        for entry in entries:
-            prefix = RouteResolver.normalize_path(entry['path'])
-            if prefix == normalized or normalized.startswith(f'{prefix}/'):
-                return route_from_snapshot(project.id, entry)
-        return None
+        # Only one-segment route base paths are supported. /doctors/456 -> /doctors.
+        base_path = '/' + normalized.strip('/').split('/', 1)[0]
+        if base_path == '/':
+            return None
+        entry = get_route(project.id, base_path)
+        return route_from_snapshot(project.id, entry) if entry is not None else None
 
 
 class GatewayRequestProxy:
