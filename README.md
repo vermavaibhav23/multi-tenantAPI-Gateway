@@ -12,7 +12,7 @@ migrations `authentication.0010` and `analytics.0006` drop the obsolete
 column and table, respectively. **Back up existing databases first:** deleting
 the request-log table permanently removes all historical request records.
 API key expiry, revocation, application identity and route-permission checks
-still use MySQL; route configuration and method policies are cached in Redis.
+still use MySQL; only per-route destination metadata is cached in Redis.
 
 ## Data model (routing schema)
 
@@ -36,8 +36,8 @@ Existing `slug`, timestamp, description and key revocation fields are retained f
 ## Gateway request flow
 
 1. The `X-API-Key` is hashed and looked up in APIKey, identifying the Application and its Project. No caller-provided project/tenant ID is trusted for routing.
-2. Read the project's Redis route snapshot (or query MySQL and populate it on a miss), then match the most specific, full-segment `Route.base_path`. `/doctors` matches `/doctors/456` but not `/doctors-extra`.
-3. Read the cached `RouteMethod` policy for the matched route and HTTP method. If absent, return 405 without trying another prefix. If its `auth_policy` is `api_key_and_jwt`, verify a **client-user** bearer token signed by the shared client authentication component, and require the JWT application identity to match the validated API key. ServLink staff JWTs are not accepted for client routes.
+2. Remove `/gateway`, extract the first path segment (`/doctors/456` -> `/doctors`), then directly get `route:{project_id}:doctors` from Redis. On a miss, fetch that route plus its BackendService origin from primary MySQL and cache for 60 seconds. Only single-segment registered base paths are supported.
+3. Query `RouteMethod` in **primary MySQL** using Route ID and HTTP method. If absent, return 405. If its `auth_policy` is `api_key_and_jwt`, verify the application-bound client-user JWT. Method/JWT policies are not cached.
 4. Apply RoutePermission (if present), per-Application Redis fixed-window rate limit, safe GET cache rules and backend destination-origin allowlist.
 5. Strip `/gateway` from the incoming path and forward the original HTTP method, body and query string to `BackendService.base_url + entire remaining request path`. Strip the raw API key, bearer token and spoofable identity headers; attach verified `X-GateScale-Application-ID` and (when authenticated) `X-GateScale-Client-User-ID`. Downstream services must be protected from direct untrusted network access.
 6. Return the downstream status/body without inserting a per-request database log.
@@ -46,41 +46,52 @@ Example: `GET /gateway/doctors/456` with Hospital A's API key, a Route whose `ba
 
 ### Redis route configuration cache
 
-Once the API key has been validated against MySQL and the Application/Project
-identified, the gateway reads the **project's route snapshot** from the same
-six-node Redis Cluster used for fixed-window rate limiting. The snapshot
-contains active base paths, backend service IDs/base URLs, and available
-HTTP method/JWT policies. The longest full-segment prefix wins: `/doctors`
-matches `/doctors/456`, but not `/doctors-extra`. The gateway appends the
-**entire requested path** to the selected service's base URL.
+We cache **one route per Redis key**, identified by the verified Project ID and
+first path segment. For example, `GET /gateway/doctors/456` resolves the key
+`route:{1}:doctors`. Redis Cluster hashes the `{1}` tag to its owning slot.
+The cached JSON contains **Route ID, public base path, backend service ID and
+backend base URL only**. We do **not** cache HTTP method/JWT policies or route
+permissions.
 
-- **Hit:** The gateway skips the `Route` + `BackendService` and
-  `RouteMethod` database reads. The cached data is **project-scoped**, not
-  keyed by full request paths like `/doctors/456`.
-- **Miss:** Load the snapshot with `select_related` and `prefetch_related`
-  from primary MySQL, then JSON-serialize to Redis with a 60-second TTL.
-- **Invalidation:** On committed model `save()`/`delete()` changes to
-  `Route`, `BackendService` or `RouteMethod`, Django signals increment a
-  project-scoped generation and delete its cached snapshot. A Redis Lua
-  compare-and-set prevents a concurrent slow cache fill from restoring an old
-  snapshot after invalidation. Both keys use one Redis Cluster hash slot.
-- **Security:** API-key validation, application identity, route permissions,
-  and application-user JWT verification **are not cached**; they still use
-  MySQL so revocations/authorization checks stay fresh. Backend origins
-  are revalidated against the allowlist before each proxy request.
-- **Degradation:** If Redis route-cache access fails, route lookup falls back
-  to primary MySQL; the independent Redis **rate limiter still fails closed
-  with HTTP 503** if it cannot enforce the application's limit.
+- **Hit:** Use the cached Route ID and backend URL without querying the Route
+  and BackendService tables.
+- **Miss:** Query the exact active base path using `select_related('backend_service')`
+  from MySQL. Store only that route for **60 seconds**. Unknown routes are not cached.
+- **Invalidation:** After committed `Route.save()/delete()` or BackendService
+  changes, clear the affected route's key. Each route also has a generation key,
+  e.g. `routeversion:{1}:doctors`. A Lua compare-and-set prevents a stale
+  concurrent cache fill from overwriting a newer invalidation.
+- **Policy freshness:** `RouteMethod` is queried with `route_id + method`
+  on every request. API-key validation, JWT verification, and application
+  permissions also continue using MySQL.
+- **Fallback:** If Redis route caching fails, the route is read from MySQL.
+  Rate limiting separately fails closed with HTTP **503** if Redis cannot
+  enforce the rate limit.
 
-**Operational limits:** `QuerySet.update()`, `bulk_update()`, and raw SQL
-bypass Django `save()/delete()` signals. For such operations call
-`gateway.route_cache.invalidate_project_routes(project_id)` **after the
-database transaction commits** for every affected project. When Redis
-invalidation itself fails, snapshots can remain stale until their 60-second
-TTL expires; this is a best-effort configuration cache, **not an absolute
-immediate revocation mechanism**. In security-critical deployments use a
-stronger invalidation/fail-closed strategy. For performance, batch/admin
-configuration writes, rather than updating routes directly with raw SQL.
+Registered base paths must contain **one segment** (e.g. `/doctors`, not
+`/doctors/appointments`). The suffix after that segment can have any depth.
+Migration `routes.0010` rejects pre-existing nested routes; rename them
+before deploying if any are present.
+
+`QuerySet.update()`, bulk SQL, and raw updates bypass model signals. After
+those operations commit, explicitly call
+`gateway.route_cache.invalidate_route(project_id, base_path)` (or
+`invalidate_project_routes(project_id)` after a bulk service change). If a
+Redis invalidation fails, stale routing data may remain up to the **60-second
+TTL**, so this is not strict immediate route revocation.
+
+### Redis backend response cache
+
+For approved, non-personalized, API-key-only **GET** requests, cached responses
+are keyed as `gateway_cache:v3:<application_id>:<complete_target_url>`, with
+the raw query string included. Project ID, HTTP method and customer ID are not
+duplicated in the key: Application IDs are unique, only GET is cached, and
+authenticated/personalized requests are bypassed. Do not enable this cache
+for responses that vary by user, language or other unmodeled headers.
+
+The response TTL remains 60 seconds. POST/PUT/PATCH/DELETE requests invalidate
+cached GET responses for every application in the same project, preserving
+cross-application invalidation for shared backend services.
 
 ### Redis Cluster (3 primaries + 3 replicas)
 
