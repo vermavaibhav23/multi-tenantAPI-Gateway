@@ -1,0 +1,50 @@
+name: MySQL InnoDB Cluster smoke test
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mysql/**'
+      - 'docker-compose.yml'
+      - '.github/workflows/mysql-cluster.yml'
+  workflow_dispatch:
+
+jobs:
+  innodb-cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        run: docker compose config --quiet
+      - name: Initialize three nodes and bootstrap MySQL Router
+        run: |
+          docker compose up -d mysql-router
+          docker compose ps
+      - name: Confirm Group Replication and consistent replica reads
+        run: |
+          set -eu
+          docker compose exec -T mysql-2 mysql -uroot -proot -Nse "SELECT COUNT(*) FROM performance_schema.replication_group_members WHERE MEMBER_STATE='ONLINE'" | grep -qx 3
+          docker compose exec -T mysql-1 mysql -uroot -proot -Nse "SELECT @@global.group_replication_consistency" | grep -qx BEFORE_AND_AFTER
+          docker compose exec -T mysql-2 mysql -uroot -proot -Nse "SELECT @@global.group_replication_consistency" | grep -qx BEFORE_AND_AFTER
+          docker compose exec -T mysql-3 mysql -uroot -proot -Nse "SELECT @@global.group_replication_consistency" | grep -qx BEFORE_AND_AFTER
+          docker compose exec -T mysql-1 mysql -hmysql-router -P6446 -ugateway -pgateway gateway_db -e "CREATE TABLE ha_smoke (id INT PRIMARY KEY, msg VARCHAR(30)); INSERT INTO ha_smoke VALUES (1, 'updated');"
+          docker compose exec -T mysql-2 mysql -hmysql-router -P6447 -ugateway -pgateway -Nse "SELECT msg FROM gateway_db.ha_smoke WHERE id=1" | grep -qx updated
+      - name: Confirm automatic election and Router write failover
+        run: |
+          set -eu
+          docker compose stop mysql-1
+          for attempt in $(seq 1 75); do
+            if docker compose exec -T mysql-3 mysql -hmysql-router -P6446 -ugateway -pgateway gateway_db -Nse "SELECT @@read_only" 2>/dev/null | grep -qx 0; then
+              docker compose exec -T mysql-3 mysql -hmysql-router -P6446 -ugateway -pgateway gateway_db -e "INSERT INTO ha_smoke VALUES (2, 'failover');"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "MySQL Router did not detect a new primary"
+          exit 1
+      - name: Logs on failure
+        if: failure()
+        run: docker compose logs mysql-1 mysql-2 mysql-3 mysql-cluster-init mysql-router
+      - name: Stop test containers
+        if: always()
+        run: docker compose down -v
