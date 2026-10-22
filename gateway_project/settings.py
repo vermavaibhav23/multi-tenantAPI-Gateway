@@ -63,6 +63,8 @@ MYSQL_USER = os.getenv('MYSQL_USER', 'gateway')
 MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD', 'gateway')
 MYSQL_HOST = os.getenv('MYSQL_HOST', 'localhost')
 MYSQL_PORT = int(os.getenv('MYSQL_PORT', '3306'))
+MYSQL_CLUSTER_ENABLED = os.getenv('MYSQL_CLUSTER_ENABLED', 'False').lower() == 'true'
+MYSQL_READ_PORT = int(os.getenv('MYSQL_READ_PORT', '6447'))
 USE_SQLITE = os.getenv('USE_SQLITE', 'True').lower() == 'true'
 
 if USE_SQLITE:
@@ -84,6 +86,16 @@ else:
             'OPTIONS': {'charset': 'utf8mb4'},
         }
     }
+    if MYSQL_CLUSTER_ENABLED:
+        DATABASES['replica'] = {
+            **DATABASES['default'],
+            'PORT': MYSQL_READ_PORT,
+            'CONN_MAX_AGE': 60,
+        }
+        DATABASES['default']['CONN_MAX_AGE'] = 60
+
+# Always keep SQLite unit tests on the single default connection.
+DATABASE_ROUTERS = ['gateway_project.db_router.PrimaryReplicaRouter']
 
 AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator'},
