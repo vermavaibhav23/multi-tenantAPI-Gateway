@@ -69,8 +69,10 @@ Redis Cluster uses hash slots, **not traditional consistent hashing**. The
 three replicas improve tolerance of individual Redis node failures, but all
 six containers still share the same Docker host; this is **not host-level
 high availability**. Redis failover can briefly interrupt requests. During a
-Redis outage, the existing gateway-local rate-limit/cache fallback may be
-inconsistent between gateway replicas. Do not expose the Redis cluster
+Redis outage, gateway and client-user login/registration rate-limiter errors
+cause HTTP **503 Service Unavailable** (fail closed), instead of using
+uncoordinated per-gateway counters. Cached GET responses are not served when
+the request cannot pass the shared rate limiter. Do not expose the Redis cluster
 network publicly; this demo does not configure Redis authentication or TLS.
 
 **Running just the Redis Cluster integration tests from Compose:**
@@ -92,7 +94,7 @@ maintenance window if preserving them matters.
 
 Each business application has its own Redis counter for each aligned time window. The normal plan allows **100 requests per 60 seconds**, while the premium plan allows **1,000 requests per 60 seconds**. All three API Gateway replicas use the same Redis key (`gateway_rate:application:<application_id>:<window_number>`) so the count is shared. A Lua script atomically increments the counter and gives new counters an expiry at the end of the window. Requests beyond the limit receive HTTP **429**, and the counter resets in the next window.
 
-**Limitations:** Fixed windows can permit bursts near a window boundary. If Redis is unavailable, the current best-effort, in-process fallback applies limits separately in each gateway replica, so enforcement is no longer globally consistent until Redis recovers.
+**Limitations:** Fixed windows can permit bursts near a window boundary. If a Redis shard cannot enforce an application's limit, the gateway responds with **503** and does not forward the request. When the primary is reachable and the limit is exceeded, it responds with **429**. All three gateway replicas therefore fail closed rather than falling back to inconsistent in-process counters. Replication is still asynchronous, so a failover may lose recently acknowledged increments.
 
 ## Administrator REST endpoints
 
@@ -263,7 +265,7 @@ Response:
 {"access":"<client_access_jwt>","refresh":"<client_refresh_jwt>","token_type":"Bearer","expires_in":900}
 ```
 
-The API key identifies the Application; user lookup is constrained to that application. No application ID provided by the caller is trusted as identity. Failed logins return a generic 401; repeated attempts are rate-limited by application/email using Redis (per-process fallback during outage).
+The API key identifies the Application; user lookup is constrained to that application. No application ID provided by the caller is trusted as identity. Failed logins return a generic 401; repeated attempts are rate-limited by application/email using Redis. When Redis is unavailable for those checks, login/registration return 503 instead of bypassing the limit.
 
 ### 4. Refresh user access
 
