@@ -54,14 +54,29 @@ class FakeRedisClient:
                 if self._read(key) is not None and fnmatch.fnmatchcase(key, match)
             ])
 
-    def eval(self, script, numkeys, key, limit, ttl_seconds):
-        # Models the project's one-key atomic fixed-window Lua script.
-        if numkeys != 1:
-            raise ValueError('Fake supports only a single-key rate-limit script')
+    def eval(self, script, numkeys, *args):
         with self._lock:
-            value = self._read(key)
-            counter = int(value) + 1 if value is not None else 1
-            self._data[key] = str(counter)
-            if counter == 1:
-                self._expires[key] = time.time() + int(ttl_seconds)
-            return int(counter <= int(limit))
+            if numkeys == 1:
+                key, limit, ttl_seconds = args
+                value = self._read(key)
+                counter = int(value) + 1 if value is not None else 1
+                self._data[key] = str(counter)
+                if counter == 1:
+                    self._expires[key] = time.time() + int(ttl_seconds)
+                return int(counter <= int(limit))
+            if numkeys == 2:
+                generation_key, data_key = args[:2]
+                if "redis.call('INCR', KEYS[1])" in script:
+                    generation = int(self._read(generation_key) or '0') + 1
+                    self._data[generation_key] = str(generation)
+                    self._data.pop(data_key, None)
+                    self._expires.pop(data_key, None)
+                    return 1
+                expected_generation, payload, ttl_seconds = args[2:]
+                current_generation = str(self._read(generation_key) or '0')
+                if current_generation != str(expected_generation):
+                    return 0
+                self._data[data_key] = payload
+                self._expires[data_key] = time.time() + int(ttl_seconds)
+                return 1
+            raise ValueError('Unsupported number of keys in Redis test double')
