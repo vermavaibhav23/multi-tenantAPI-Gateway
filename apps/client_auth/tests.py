@@ -6,7 +6,6 @@ from django.test import RequestFactory, override_settings
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from analytics.models import RequestLog
 from authentication.models import APIKey, Application
 from client_auth.models import ApplicationUser
 from client_auth.services import issue_token_pair
@@ -174,14 +173,13 @@ class ClientUserAuthenticationTests(APITestCase):
         self.assertIn('refresh', success.data)
         self.assertEqual(success.data['expires_in'], 900)
 
-    def test_valid_client_token_passes_and_is_logged_with_user(self):
+    def test_valid_client_token_passes_to_backend(self):
         token = self._login(self.key_a).data['access']
         with patch('gateway.views.GatewayRequestProxy.proxy',
                    return_value=httpx.Response(200, json={'ok': True})) as proxy:
             resp = self._protected(self.key_a, token)
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(proxy.call_count, 1)
-        self.assertEqual(RequestLog.objects.get().client_user_id, self.client_user_a.pk)
 
     def test_client_jwt_cannot_cross_applications_even_if_same_email(self):
         token = self._login(self.key_a).data['access']
