@@ -14,6 +14,7 @@ from client_auth.services import issue_token_pair
 
 from authentication.models import APIKey, Application, RoutePermission
 from gateway.services import ProductResponseCache, RedisRateLimiter
+from gateway.test_support import FakeRedisClient
 from routes.models import BackendService, Route, RouteMethod
 from users.models import Project
 
@@ -27,9 +28,10 @@ class GatewayRoutingTests(APITestCase):
         )
         ctx.enable()
         self.addCleanup(ctx.disable)
-        offline = patch('redis.Redis.execute_command', side_effect=redis.ConnectionError('test offline'))
-        offline.start()
-        self.addCleanup(offline.stop)
+        shared_redis = FakeRedisClient()
+        mocked_redis = patch('gateway.services.get_redis_client', return_value=shared_redis)
+        mocked_redis.start()
+        self.addCleanup(mocked_redis.stop)
         self.user = get_user_model().objects.create_user(
             username='owner', email='owner@example.com', password='test-password123'
         )
@@ -39,7 +41,6 @@ class GatewayRoutingTests(APITestCase):
         )
         self.api_key, self.key = APIKey.create_for_project(self.project, 'key')
         ProductResponseCache._memory_store.clear()
-        RedisRateLimiter._memory_store.clear()
 
     def route(self, path='/doctors', url='http://127.0.0.1:9002/doctors',
               methods=None, service=None):
@@ -222,11 +223,15 @@ class GatewayRoutingTests(APITestCase):
 
     def test_fixed_window_resets_at_boundary(self):
         limiter = RedisRateLimiter()
-        with patch('gateway.services.time.time', side_effect=[0, 1, 59, 60]):
-            self.assertTrue(limiter._fallback_allow_request('window:test', 2, 60))
-            self.assertTrue(limiter._fallback_allow_request('window:test', 2, 60))
-            self.assertFalse(limiter._fallback_allow_request('window:test', 2, 60))
-            self.assertTrue(limiter._fallback_allow_request('window:test', 2, 60))
+        with patch('gateway.services.time.time', side_effect=[0, 1, 59, 60]), patch.object(
+            limiter.client, 'eval', side_effect=[1, 1, 0, 1],
+        ) as redis_eval:
+            self.assertTrue(limiter.allow_request('window:test', 2, 60))
+            self.assertTrue(limiter.allow_request('window:test', 2, 60))
+            self.assertFalse(limiter.allow_request('window:test', 2, 60))
+            self.assertTrue(limiter.allow_request('window:test', 2, 60))
+        self.assertEqual([call.args[2] for call in redis_eval.call_args_list],
+                         ['window:test:0', 'window:test:0', 'window:test:0', 'window:test:1'])
 
     def test_redis_uses_distinct_keys_for_fixed_windows(self):
         limiter = RedisRateLimiter()
