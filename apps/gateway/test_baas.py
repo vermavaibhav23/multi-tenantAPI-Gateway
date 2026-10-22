@@ -16,6 +16,7 @@ from authentication.models import APIKey, Application, RoutePermission
 from dummy_backend.server import DummyBackendHandler
 from gateway.services import ProductResponseCache, RedisRateLimiter
 from gateway.test_support import FakeRedisClient
+from gateway.route_cache import invalidate_project_routes
 from routes.demo import INDUSTRY_BUNDLES
 from routes.models import BackendService, Route, RouteMethod
 from users.models import Project, User
@@ -123,6 +124,7 @@ class BaaSIntegrationTests(APITestCase):
             for _, host, path in services:
                 origin, received = self.backend(host)
                 BackendService.objects.filter(project=project, slug=host).update(base_url=origin)
+                invalidate_project_routes(project.id)  # Bulk QuerySet.update bypasses model signals.
                 with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin]):
                     for method, _ in RouteMethod.METHOD_CHOICES:
                         with self.subTest(host=host, method=method):
