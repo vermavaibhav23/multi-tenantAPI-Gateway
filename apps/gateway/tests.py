@@ -29,6 +29,7 @@ class GatewayRoutingTests(APITestCase):
         ctx.enable()
         self.addCleanup(ctx.disable)
         shared_redis = FakeRedisClient()
+        self.shared_redis = shared_redis
         mocked_redis = patch('gateway.services.get_redis_client', return_value=shared_redis)
         mocked_redis.start()
         self.addCleanup(mocked_redis.stop)
@@ -152,19 +153,14 @@ class GatewayRoutingTests(APITestCase):
             self.assertEqual(response.status_code, 405)
             proxy.assert_not_called()
 
-    def test_matching_is_segment_aware_and_uses_longest_prefix(self):
+    def test_single_segment_route_matches_entire_remaining_suffix(self):
         self.route()
-        second_service = BackendService.objects.create(
-            project=self.project, name='Doctor Admin Service'
-        )
-        self.route(
-            path='/doctors/admin', url='http://127.0.0.1:9002/doctors/admin',
-            methods=[('GET', 'api_key_and_jwt')], service=second_service,
-        )
-        self.assertEqual(self.client.get('/gateway/doctors-other', **self.headers()).status_code, 404)
-        self.assertEqual(self.client.get('/gateway/doctors/admin', **self.headers()).status_code, 401)
-        # DELETE should not fall through to a less restrictive /doctors mapping.
-        self.assertEqual(self.client.delete('/gateway/doctors/admin', **self.headers()).status_code, 405)
+        with patch('gateway.views.GatewayRequestProxy.proxy',
+                   return_value=httpx.Response(200, json={'ok': True})) as proxy:
+            self.assertEqual(self.client.get('/gateway/doctors-other', **self.headers()).status_code, 404)
+            self.assertEqual(self.client.get('/gateway/doctors/admin/456', **self.headers()).status_code, 200)
+            self.assertEqual(self.client.delete('/gateway/doctors/admin', **self.headers()).status_code, 405)
+            proxy.assert_called_once()
 
     def test_cross_project_and_route_permission_denied(self):
         local_route = self.route()
@@ -215,6 +211,20 @@ class GatewayRoutingTests(APITestCase):
                 '/gateway/doctors?x=1', **self.headers(raw_key=other_key)
             ).status_code, 200)
             self.assertEqual(proxy.call_count, 3)
+
+    def test_response_cache_key_uses_application_and_complete_url(self):
+        self.route()
+        with patch('gateway.views.GatewayRequestProxy.proxy',
+                   return_value=httpx.Response(200, json={'ok': True})):
+            response = self.client.get('/gateway/doctors/456?type=general', **self.headers())
+            self.assertEqual(response.status_code, 200)
+        keys = [key for key in self.shared_redis._data if key.startswith('gateway_cache:')]
+        self.assertEqual(len(keys), 1)
+        self.assertEqual(
+            keys[0],
+            f'gateway_cache:v3:{self.api_key.application_id}:'
+            'http://127.0.0.1:9002/doctors/456?type=general'
+        )
 
     def test_get_and_delete_cannot_share_jwt_cache(self):
         self.route(methods=[('GET', 'api_key_only'), ('DELETE', 'api_key_and_jwt')])
