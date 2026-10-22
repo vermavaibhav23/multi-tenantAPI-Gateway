@@ -1,4 +1,6 @@
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 from rest_framework import status
 from rest_framework.test import APITestCase
 
@@ -14,6 +16,17 @@ class APIKeyValidationTests(TestCase):
     def test_valid_key(self):
         api_key, raw_key = APIKey.create_for_project(self.project, 'primary')
         self.assertIsNotNone(APIKey.validate_key(raw_key))
+
+    def test_api_key_validation_never_writes_usage_timestamp(self):
+        api_key, raw_key = APIKey.create_for_project(self.project, 'primary')
+        self.assertNotIn('last_used_at', {field.name for field in APIKey._meta.fields})
+        with CaptureQueriesContext(connection) as executed:
+            validated = APIKey.validate_key(raw_key)
+        self.assertEqual(validated.pk, api_key.pk)
+        self.assertFalse(any(
+            query['sql'].lstrip().upper().startswith(('UPDATE ', 'INSERT ', 'DELETE '))
+            for query in executed.captured_queries
+        ), 'API key validation should only read the database')
 
     def test_expired_key(self):
         api_key, raw_key = APIKey.create_for_project(self.project, 'expired', expires_days=0)
@@ -31,6 +44,15 @@ class ApplicationCreateTests(APITestCase):
         self.user = User.objects.create_user(username='owner', is_staff=True, email='owner@example.com', password='password123')
         self.project = Project.objects.create(owner=self.user, name='Fashion', slug='fashion')
         self.client.force_authenticate(user=self.user)
+
+    def test_dashboard_reports_configuration_without_request_metrics(self):
+        response = self.client.get('/admin-api/dashboard')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data['projects']), 1)
+        entry = response.data['projects'][0]
+        self.assertIn('route_count', entry)
+        self.assertIn('api_key_count', entry)
+        self.assertNotIn('requests', entry)
 
     def test_application_create_also_creates_api_key(self):
         response = self.client.post(
