@@ -14,9 +14,11 @@ from routes.models import Route
 from .redis_client import get_redis_client
 
 
+class RateLimitBackendUnavailable(Exception):
+    """The shared Redis rate limiter cannot enforce the global limit."""
+
+
 class RedisRateLimiter:
-    _memory_store = {}
-    _lock = threading.Lock()
     _FIXED_WINDOW_SCRIPT = """
 local count = redis.call('INCR', KEYS[1])
 if count == 1 then
@@ -29,36 +31,24 @@ return 0
 """
 
     def __init__(self, redis_url=None):
-        # Redis Cluster needs topology discovery only once per worker.
-        # If Redis is initially unavailable, preserve the existing local fallback.
+        # Fail closed when the cluster cannot be reached/discovered.
         try:
             self.client = get_redis_client(redis_url)
-        except (redis.RedisError, OSError):
-            self.client = None
-
-    def _fallback_allow_request(self, key, limit, window_seconds):
-        # Local fallback is best-effort only: it is not shared across replicas.
-        window_number = int(time.time()) // window_seconds
-        with self._lock:
-            saved_window, count = self._memory_store.get(key, (None, 0))
-            if saved_window != window_number:
-                count = 0
-            count += 1
-            self._memory_store[key] = (window_number, count)
-            return count <= limit
+        except (redis.RedisError, OSError) as exc:
+            raise RateLimitBackendUnavailable('Redis rate limiter unavailable') from exc
 
     def allow_request(self, key, limit, window_seconds):
         # All gateway replicas use the same aligned time window and Redis key.
         now = int(time.time())
         window_key = f'{key}:{now // window_seconds}'
         ttl_seconds = window_seconds - (now % window_seconds)
-        if self.client is None:
-            return self._fallback_allow_request(key, limit, window_seconds)
         try:
             allowed = self.client.eval(self._FIXED_WINDOW_SCRIPT, 1, window_key, limit, ttl_seconds)
             return int(allowed) == 1
-        except redis.RedisError:
-            return self._fallback_allow_request(key, limit, window_seconds)
+        except (redis.RedisError, OSError) as exc:
+            # Do NOT bypass globally enforced limits with replica-local counters.
+            raise RateLimitBackendUnavailable('Redis rate limiter unavailable') from exc
+
 
 class RouteResolver:
     @staticmethod
