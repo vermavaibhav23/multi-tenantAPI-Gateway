@@ -1,74 +1,49 @@
-"""Invalidate Redis routing snapshots after committed configuration changes."""
+"""Invalidate per-route Redis entries after committed route/service changes."""
 from django.db import transaction
-from django.db.models.signals import post_delete, post_save, pre_delete, pre_save
+from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
-from .models import BackendService, Route, RouteMethod
+from .models import BackendService, Route
 
 
-def _invalidate_on_commit(project_id, using):
-    if project_id is None:
+def _invalidate_after_commit(project_id, base_path, using):
+    if project_id is None or not base_path:
         return
-    from gateway.route_cache import invalidate_project_routes
-    transaction.on_commit(lambda: invalidate_project_routes(project_id), using=using)
+    from gateway.route_cache import invalidate_route
+
+    transaction.on_commit(
+        lambda project_id=project_id, base_path=base_path: invalidate_route(project_id, base_path),
+        using=using,
+    )
 
 
-def _old_project_id(sender, instance, using):
-    if not instance.pk:
-        return None
-    return sender.objects.using(using).filter(pk=instance.pk).values_list(
-        'project_id', flat=True
-    ).first()
-
-
-@receiver(pre_save, sender=BackendService)
 @receiver(pre_save, sender=Route)
-def remember_prior_project(sender, instance, using, **kwargs):
-    instance._route_cache_old_project_id = _old_project_id(sender, instance, using)
+def remember_previous_route(sender, instance, using, **kwargs):
+    instance._route_cache_previous = None
+    if instance.pk:
+        instance._route_cache_previous = sender.objects.using(using).filter(
+            pk=instance.pk
+        ).values_list('project_id', 'base_path').first()
 
 
-@receiver(pre_save, sender=RouteMethod)
-def remember_prior_route(sender, instance, using, **kwargs):
-    if not instance.pk:
-        return
-    previous_route = sender.objects.using(using).filter(pk=instance.pk).values_list(
-        'route__project_id', flat=True
-    ).first()
-    instance._route_cache_old_project_id = previous_route
+@receiver(post_save, sender=Route)
+def invalidate_saved_route(sender, instance, using, **kwargs):
+    _invalidate_after_commit(instance.project_id, instance.base_path, using)
+    previous = getattr(instance, '_route_cache_previous', None)
+    if previous is not None and previous != (instance.project_id, instance.base_path):
+        _invalidate_after_commit(previous[0], previous[1], using)
 
 
-@receiver(pre_delete, sender=RouteMethod)
-def remember_deleted_method_project(sender, instance, using, **kwargs):
-    instance._route_cache_old_project_id = instance.route.project_id
+@receiver(post_delete, sender=Route)
+def invalidate_deleted_route(sender, instance, using, **kwargs):
+    _invalidate_after_commit(instance.project_id, instance.base_path, using)
 
 
 @receiver(post_save, sender=BackendService)
-@receiver(post_save, sender=Route)
-def invalidate_route_or_service(sender, instance, using, **kwargs):
-    _invalidate_on_commit(instance.project_id, using)
-    old_project_id = getattr(instance, '_route_cache_old_project_id', None)
-    if old_project_id != instance.project_id:
-        _invalidate_on_commit(old_project_id, using)
-
-
-@receiver(post_delete, sender=BackendService)
-@receiver(post_delete, sender=Route)
-def invalidate_deleted_route_or_service(sender, instance, using, **kwargs):
-    _invalidate_on_commit(instance.project_id, using)
-
-
-@receiver(post_save, sender=RouteMethod)
-@receiver(post_delete, sender=RouteMethod)
-def invalidate_method(sender, instance, using, **kwargs):
-    project_id = getattr(instance, '_route_cache_old_project_id', None)
-    if project_id is None or instance._state.adding:
-        # New policies and ordinary saves: look up their owning project.
-        project_id = Route.objects.using(using).filter(
-            pk=instance.route_id
-        ).values_list('project_id', flat=True).first()
-    _invalidate_on_commit(project_id, using)
-    other_id = Route.objects.using(using).filter(
-        pk=instance.route_id
-    ).values_list('project_id', flat=True).first()
-    if other_id != project_id:
-        _invalidate_on_commit(other_id, using)
+def invalidate_routes_for_changed_service(sender, instance, using, **kwargs):
+    # A shared backend can own several distinct base paths.
+    paths = Route.objects.using(using).filter(backend_service_id=instance.pk).values_list(
+        'project_id', 'base_path'
+    )
+    for project_id, base_path in paths:
+        _invalidate_after_commit(project_id, base_path, using)
