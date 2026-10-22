@@ -1,25 +1,23 @@
-"""Shared Redis Cluster cache for project routes (not API keys or app permissions).
+"""Per-route Redis cache. Method policies and permissions remain in MySQL.
 
-Cache a project route snapshot once, then match longest prefix in Python.
-Explicit JSON prevents unpickling arbitrary data. Two keys share a Redis
-Cluster hash slot so scripts can atomically publish/invalidate snapshots.
+Public routes use a single-segment base path, e.g. /doctors. Each project +
+base path has a distinct Redis key. A per-route generation key prevents a
+concurrent stale MySQL read from repopulating a just-invalidated route.
+Both Lua keys share a Redis Cluster hash slot.
 """
 import json
 import logging
 
 import redis
-from django.conf import settings
 from django.db.models import Q
 
 from routes.models import BackendService, Route
-
 from .redis_client import get_redis_client
 
 
 logger = logging.getLogger(__name__)
 ROUTE_CACHE_TTL_SECONDS = 60
 
-# Abort stale cache fills if route configuration changed during DB loading.
 _PUBLISH_IF_CURRENT = """
 local generation = redis.call('GET', KEYS[1]) or '0'
 if generation ~= ARGV[1] then return 0 end
@@ -27,7 +25,6 @@ redis.call('SET', KEYS[2], ARGV[2], 'EX', tonumber(ARGV[3]))
 return 1
 """
 
-# Bump generation + delete the cached snapshot as one Redis operation.
 _INVALIDATE = """
 redis.call('INCR', KEYS[1])
 redis.call('DEL', KEYS[2])
@@ -35,79 +32,92 @@ return 1
 """
 
 
-def _keys(project_id):
-    tag = '{servlink-routes-' + str(project_id) + '}'
-    return f'routecfg:{tag}:version', f'routecfg:{tag}:data'
+def _keys(project_id, base_path):
+    # {project_id} pins both script keys to the same Redis Cluster slot.
+    suffix = base_path.lstrip('/')
+    if not suffix or '/' in suffix:
+        raise ValueError('Route base path must have exactly one segment.')
+    return (
+        f'routeversion:{{{project_id}}}:{suffix}',
+        f'route:{{{project_id}}}:{suffix}',
+    )
 
 
-def _read_project_routes(project_id):
-    rows = Route.objects.select_related('backend_service').prefetch_related(
-        'method_policies'
-    ).filter(
+def _read_route(project_id, base_path):
+    route = Route.objects.select_related('backend_service').filter(
         Q(backend_service__isnull=True) |
         Q(backend_service__project_id=project_id, backend_service__is_active=True),
-        project_id=project_id, is_active=True,
-    )
-    result = []
-    for route in rows:
-        service = route.backend_service
-        result.append({
-            'id': route.id,
-            'path': route.base_path,
-            'service': None if service is None else {
-                'id': service.id,
-                'base_url': service.base_url,
-            },
-            'methods': {policy.method: policy.auth_policy for policy in route.method_policies.all()},
-        })
-    # Longest full-segment prefix must win, regardless of method policy.
-    return sorted(result, key=lambda entry: len(entry['path'].strip('/')), reverse=True)
+        project_id=project_id, base_path=base_path, is_active=True,
+    ).first()
+    if route is None:
+        return None
+    service = route.backend_service
+    return {
+        'id': route.pk,
+        'path': route.base_path,
+        'service': None if service is None else {
+            'id': service.pk,
+            'base_url': service.base_url,
+        },
+    }
 
 
-def get_project_routes(project_id):
-    """Use cached route snapshot, falling back to primary MySQL on Redis errors."""
+def get_route(project_id, base_path):
+    """Resolve a single route from Redis, falling back to MySQL on cache errors.
+
+    Missing routes are not cached; this keeps new route creation straightforward.
+    """
     try:
+        version_key, data_key = _keys(project_id, base_path)
         client = get_redis_client()
-        version_key, data_key = _keys(project_id)
         for _ in range(3):
             cached = client.get(data_key)
             if cached is not None:
                 return json.loads(cached)
             generation = client.get(version_key) or '0'
-            fresh = _read_project_routes(project_id)
-            saved = client.eval(
+            route = _read_route(project_id, base_path)
+            if route is None:
+                return None
+            published = client.eval(
                 _PUBLISH_IF_CURRENT, 2, version_key, data_key,
-                generation, json.dumps(fresh), ROUTE_CACHE_TTL_SECONDS,
+                generation, json.dumps(route), ROUTE_CACHE_TTL_SECONDS,
             )
-            if int(saved) == 1:
-                return fresh
-        # Concurrent config changes: do not serve an older cached snapshot.
-        return _read_project_routes(project_id)
+            if int(published) == 1:
+                return route
+        return _read_route(project_id, base_path)
     except (redis.RedisError, OSError, ValueError, TypeError):
-        return _read_project_routes(project_id)
+        return _read_route(project_id, base_path)
+
+
+def invalidate_route(project_id, base_path):
+    """Invalidate after a committed route/service configuration change."""
+    if project_id is None or not base_path:
+        return
+    try:
+        version_key, data_key = _keys(project_id, base_path)
+        get_redis_client().eval(_INVALIDATE, 2, version_key, data_key)
+    except (redis.RedisError, OSError, ValueError):
+        # A failed invalidation may leave stale routing information until TTL.
+        logger.warning('Route-cache invalidation failed for %s:%s', project_id, base_path)
 
 
 def invalidate_project_routes(project_id):
-    """Invalidate following a committed route/service/method change.
+    """Explicitly invalidate all known routes after bulk updates/raw SQL.
 
-    For bulk QuerySet.update()/raw SQL (which bypass Django model signals),
-    callers must explicitly invalidate affected projects after commit.
+    Normal model save/delete uses more precise per-route invalidation.
+    Call this only AFTER transaction commit for database bulk updates.
     """
     if project_id is None:
         return
-    try:
-        version_key, data_key = _keys(project_id)
-        get_redis_client().eval(_INVALIDATE, 2, version_key, data_key)
-    except (redis.RedisError, OSError):
-        # A short TTL bounds stale configuration if an invalidation cannot
-        # reach Redis. Don't make an already committed DB change error.
-        logger.warning('Failed to invalidate route cache for project %s', project_id)
+    paths = Route.objects.filter(project_id=project_id).values_list('base_path', flat=True)
+    for path in paths:
+        invalidate_route(project_id, path)
 
 
 def route_from_snapshot(project_id, entry):
-    """Hydrate lightweight Django model instances for permission FK comparisons.
+    """Create lightweight model objects for existing permission/URL code.
 
-    Models are never saved. API key and RoutePermission queries still hit MySQL.
+    RoutePermission still uses the real route ID against primary MySQL.
     """
     service_data = entry['service']
     service = (None if service_data is None else BackendService(
@@ -116,12 +126,10 @@ def route_from_snapshot(project_id, entry):
         base_url=service_data['base_url'],
         is_active=True,
     ))
-    route = Route(
+    return Route(
         id=entry['id'],
         project_id=project_id,
         base_path=entry['path'],
         backend_service=service,
         is_active=True,
     )
-    route._cached_method_policies = entry['methods']
-    return route
