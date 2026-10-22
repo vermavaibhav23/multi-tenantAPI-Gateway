@@ -13,6 +13,8 @@ column and table, respectively. **Back up existing databases first:** deleting
 the request-log table permanently removes all historical request records.
 API key expiry, revocation, application identity and route-permission checks
 still use MySQL; only per-route destination metadata is cached in Redis.
+In the Docker cluster setup, safe reads go through MySQL Router's read-only
+port with Group Replication BEFORE_AND_AFTER consistency.
 
 ## Data model (routing schema)
 
@@ -37,7 +39,7 @@ Existing `slug`, timestamp, description and key revocation fields are retained f
 
 1. The `X-API-Key` is hashed and looked up in APIKey, identifying the Application and its Project. No caller-provided project/tenant ID is trusted for routing.
 2. Remove `/gateway`, extract the first path segment (`/doctors/456` -> `/doctors`), then directly get `route:{project_id}:doctors` from Redis. On a miss, fetch that route plus its BackendService origin from primary MySQL and cache for 60 seconds. Only single-segment registered base paths are supported.
-3. Query `RouteMethod` in **primary MySQL** using Route ID and HTTP method. If absent, return 405. If its `auth_policy` is `api_key_and_jwt`, verify the application-bound client-user JWT. Method/JWT policies are not cached.
+3. Query `RouteMethod` in **MySQL via Router's read-only endpoint** using Route ID and HTTP method. If absent, return 405. If its `auth_policy` is `api_key_and_jwt`, verify the application-bound client-user JWT. Method/JWT policies are not cached.
 4. Apply RoutePermission (if present), per-Application Redis fixed-window rate limit, safe GET cache rules and backend destination-origin allowlist.
 5. Strip `/gateway` from the incoming path and forward the original HTTP method, body and query string to `BackendService.base_url + entire remaining request path`. Strip the raw API key, bearer token and spoofable identity headers; attach verified `X-GateScale-Application-ID` and (when authenticated) `X-GateScale-Client-User-ID`. Downstream services must be protected from direct untrusted network access.
 6. Return the downstream status/body without inserting a per-request database log.
@@ -92,6 +94,67 @@ for responses that vary by user, language or other unmodeled headers.
 The response TTL remains 60 seconds. POST/PUT/PATCH/DELETE requests invalidate
 cached GET responses for every application in the same project, preserving
 cross-application invalidation for shared backend services.
+
+### MySQL InnoDB Cluster (single-primary + two read replicas)
+
+The default `docker-compose.yml` now deploys three **MySQL 8.0 nodes**,
+a **MySQL Shell bootstrap job**, and **MySQL Router**. Each MySQL node has
+its own Docker volume and its own Docker IP. They all listen on internal port
+`3306`, with `33061` reserved for Group Replication communication (not
+published to the host). MySQL Shell's AdminAPI creates/joins the single-primary
+cluster. The nodes coordinate writes through Group Replication.
+
+- `mysql-1:3306`: starts as primary, accepts reads and writes.
+- `mysql-2:3306` and `mysql-3:3306`: secondaries, serve reads.
+- `mysql-router:6446`: read/write endpoint; new connections go to the
+  **current primary**.
+- `mysql-router:6447`: read-only endpoint; load-balances **connections**
+  across healthy secondary nodes, not SQL statements individually.
+- Django's `PrimaryReplicaRouter` sends SELECTs outside atomic write
+  transactions to alias `replica` (6447), while UPDATE/INSERT/DELETE,
+  locking reads, and reads within `transaction.atomic()` use `default`
+  (6446). Routing is based on DB operations, **not** HTTP GET/POST methods.
+  When SQLite is used in unit tests, everything stays on `default`.
+- Every MySQL member uses `group_replication_consistency=BEFORE_AND_AFTER`:
+  required preceding transactions are applied before reads, and writes wait
+  for required application on other ONLINE members before acknowledgment.
+  This reduces replica-staleness after acknowledged admin updates, but
+  increases latency and can block during member failures.
+- Group Replication elects a new primary after losing the current one,
+  provided a majority of nodes remains. MySQL Router discovers the change
+  and reroutes **new** read/write connections; broken in-flight DB
+  connections still need retrying.
+
+**Fresh-data deployment and existing-data safety:** The new cluster uses
+`mysql_1_data`, `mysql_2_data`, and `mysql_3_data`. The former
+`mysql_data` volume is deliberately **not mounted or deleted**. The new
+cluster therefore initially contains a **fresh gateway database**. To retain
+prior records, back up and restore them onto the **new cluster primary**
+during a maintenance window; validate schema migrations and records before
+redirecting traffic. Never run `docker compose down -v` against any setup
+whose Docker volumes contain data you need.
+
+**Start and inspect the cluster:**
+
+```bash
+cp .env.example .env   # Set MYSQL_ROOT_PASSWORD, MYSQL_PASSWORD, JWT secrets
+docker compose up --build -d
+docker compose ps
+docker compose logs mysql-cluster-init mysql-router
+docker compose exec mysql-1 mysql -uroot -p -e "SELECT * FROM performance_schema.replication_group_members;"
+docker compose exec mysql-1 mysql -uroot -p -e "SELECT @@group_replication_consistency;"
+```
+
+A separate GitHub Actions workflow `MySQL InnoDB Cluster smoke test`
+checks 3 ONLINE members, consistent reads through Router port 6447,
+write routing through 6446 and primary failure/election.
+
+**Local demo, not production HA:** All containers on one Docker host still
+fail together if that host fails. MySQL Router is also a single point of
+failure unless replicated. Secure secrets/TLS, resource limits, backups,
+host placement, retry policies and monitoring are necessary before
+production use. The example credentials and Docker defaults are for
+development only.
 
 ### Redis Cluster (3 primaries + 3 replicas)
 
@@ -165,8 +228,13 @@ Admin APIs use a valid ServLink staff JWT, obtained from `POST /admin-api/auth/l
 | `POST /admin-api/auth/register` | Staff-only creation of a nonstaff Django user |
 | `GET/POST /admin-api/projects` | List or create projects |
 | `GET/POST /admin-api/services` | List or register BackendServices |
+| `GET/PATCH/PUT /admin-api/services/<id>` | Read/update a service URL or active state |
 | `GET/POST /admin-api/routes` | List or create project base-path Route mappings |
+| `GET/PATCH/PUT /admin-api/routes/<id>` | Read/update a route, invalidate old/new route keys |
 | `GET/POST /admin-api/route-methods` | List or create HTTP method + JWT policy per Route |
+| `GET/PATCH/PUT /admin-api/route-methods/<id>` | Update HTTP/JWT policy (always read from MySQL) |
+| `GET/POST /admin-api/route-permissions` | List or create an application-to-route permission |
+| `GET/PATCH/PUT /admin-api/route-permissions/<id>` | Read/update a route permission |
 | `GET/POST /admin-api/applications` | List or register business applications (creates first API key) |
 | `GET/POST /admin-api/application-users` | Staff lists or creates end-user accounts for owned applications |
 | `POST /admin-api/application-users/<id>/disable` | Staff disables an application user and immediately invalidates their tokens |
@@ -220,7 +288,7 @@ Content-Type: application/json
 {"route":301,"method":"DELETE","auth_policy":"api_key_and_jwt"}
 ```
 
-The `Route` API no longer has a `target_url` field. `BackendService.base_url` is an operator-approved origin with no path, query string or fragment. An empty base URL is allowed for an unconfigured service and returns 503 at forwarding time. A new Route with no RouteMethod records is not callable. The demo seeder populates the five supported methods automatically. Admin APIs expose create/list, not general update/delete for all entities; Django admin or a future management API is needed to edit existing policies.
+The `Route` API no longer has a `target_url` field. `BackendService.base_url` is an operator-approved origin with no path, query string or fragment. An empty base URL is allowed for an unconfigured service and returns 503 at forwarding time. A new Route with no RouteMethod records is not callable. The demo seeder populates the five supported methods automatically. Admin APIs support PATCH/PUT on services, routes, method policies and route permissions. All such updates are wrapped in primary-side database transactions; route-cache invalidation only runs following successful commit.
 
 ## Demo setup
 

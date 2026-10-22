@@ -23,7 +23,7 @@ jobs:
       - name: Unit and integration tests
         env:
           USE_SQLITE: 'True'
-        run: python manage.py test authentication users routes gateway analytics client_auth
+        run: python manage.py test authentication users routes gateway analytics client_auth gateway_project.test_db_router
 
   redis-cluster:
     name: Six-node Redis Cluster integration
