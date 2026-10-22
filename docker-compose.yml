@@ -65,7 +65,7 @@ x-mysql-node: &mysql-node
   networks:
     - default
   healthcheck:
-    test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$MYSQL_ROOT_PASSWORD --silent"]
+    test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
     interval: 5s
     timeout: 3s
     retries: 45
@@ -88,7 +88,7 @@ services:
     # Router starts after cluster bootstrap, but allow time for its first listener.
     command: >
       sh -c 'i=0; until python manage.py migrate; do
-        i=$((i+1)); if [ "$i" -ge 30 ]; then exit 1; fi;
+        i=$$((i+1)); if [ "$$i" -ge 30 ]; then exit 1; fi;
         sleep 3; done'
 
   api-gateway-1:
