@@ -86,10 +86,10 @@ services:
   api-gateway-migrate:
     <<: *gateway-base
     # Router starts after cluster bootstrap, but allow time for its first listener.
-  command: >
-    sh -c 'i=0; until python manage.py migrate; do
-      i=$((i+1)); if [ "$i" -ge 30 ]; then exit 1; fi;
-      sleep 3; done'
+    command: >
+      sh -c 'i=0; until python manage.py migrate; do
+        i=$((i+1)); if [ "$i" -ge 30 ]; then exit 1; fi;
+        sleep 3; done'
 
   api-gateway-1:
     <<: *gateway-base
@@ -329,8 +329,7 @@ services:
     restart: "no"
 
 volumes:
-  # Former mysql_data volumes are intentionally NOT deleted by this upgrade.
-  mysql_data:
+  # The former mysql_data volume remains orphaned and untouched.
   mysql_1_data:
   mysql_2_data:
   mysql_3_data:
