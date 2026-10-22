@@ -10,7 +10,7 @@ from rest_framework.views import APIView
 from routes.destinations import validate_backend_base_url, validate_target_url
 from routes.models import RouteMethod
 
-from .services import GatewayLogger, GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RouteResolver
+from .services import GatewayLogger, GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RateLimitBackendUnavailable, RouteResolver
 
 
 GATEWAY_CACHE_TTL_SECONDS = 60
@@ -66,7 +66,11 @@ class GatewayProxyView(APIView):
             return reject('API key is not linked to an active application.', 401, route)
         limit, window_seconds = application.resolved_rate_limit()
         rate_key = f'gateway_rate:application:{application.id}'
-        if not RedisRateLimiter().allow_request(rate_key, limit, window_seconds):
+        try:
+            allowed = RedisRateLimiter().allow_request(rate_key, limit, window_seconds)
+        except RateLimitBackendUnavailable:
+            return reject('Rate limiting temporarily unavailable. Please retry later.', 503, route)
+        if not allowed:
             return reject('Rate limit exceeded', 429, route, error_key='error')
 
         if not route.backend_service or not route.backend_service.base_url:
