@@ -7,9 +7,16 @@ from uuid import uuid4
 
 import redis
 from django.test import SimpleTestCase, override_settings
+from rest_framework.test import APITestCase
 
 from gateway.redis_client import _cached_client, get_redis_client
 from gateway.services import ProductResponseCache, RedisRateLimiter, RateLimitBackendUnavailable
+from gateway.route_cache import (
+    _read_project_routes, invalidate_project_routes,
+)
+from gateway.services import RouteResolver
+from routes.models import BackendService, Route, RouteMethod
+from users.models import Project, User
 
 
 class RedisClusterClientTests(SimpleTestCase):
@@ -111,3 +118,35 @@ class LiveRedisClusterTests(SimpleTestCase):
                 cache.client.delete(f'{key}:{window + offset}')
             for item in keys:
                 cache.client.delete(item)
+
+
+@skipUnless(os.getenv('GATESCALE_TEST_REDIS_CLUSTER_URL'),
+            'Set GATESCALE_TEST_REDIS_CLUSTER_URL to test route snapshots against Redis Cluster.')
+@override_settings(REDIS_CLUSTER_ENABLED=True)
+class LiveRouteSnapshotTests(APITestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username='route-cache-admin')
+        self.project = Project.objects.create(owner=self.owner, name='Cache Cluster Test')
+        service = BackendService.objects.create(
+            project=self.project, name='Doctor Service',
+            base_url='http://healthcare-doctor-service:8000',
+        )
+        self.route = Route.objects.create(
+            project=self.project, name='Doctors', base_path='/doctors',
+            backend_service=service,
+        )
+        RouteMethod.objects.create(route=self.route, method='GET')
+        invalidate_project_routes(self.project.id)
+        self.addCleanup(invalidate_project_routes, self.project.id)
+
+    def test_redis_cluster_route_hit_and_committed_route_disable(self):
+        with patch('gateway.route_cache._read_project_routes', wraps=_read_project_routes) as loader:
+            first = RouteResolver.get_route_for_request(self.project, 'GET', '/doctors/12')
+            second = RouteResolver.get_route_for_request(self.project, 'GET', '/doctors/34')
+            self.assertEqual(loader.call_count, 1)
+        self.assertEqual(first.id, self.route.id)
+        self.assertEqual(second.id, self.route.id)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.route.is_active = False
+            self.route.save(update_fields=['is_active'])
+        self.assertIsNone(RouteResolver.get_route_for_request(self.project, 'GET', '/doctors/12'))
