@@ -118,6 +118,5 @@ class DashboardView(APIView):
                 'name': project.name,
                 'route_count': project.routes.count(),
                 'api_key_count': APIKey.objects.filter(application__project=project).count(),
-                'requests': project.request_logs.count(),
             })
         return Response({'projects': payload})
