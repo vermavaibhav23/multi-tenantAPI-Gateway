@@ -46,6 +46,13 @@ Existing `slug`, timestamp, description and key revocation fields are retained f
 
 Example: `GET /gateway/doctors/456` with Hospital A's API key, a Route whose `base_path=/doctors`, and DoctorService whose `base_url=http://healthcare-doctor-service:8000` is sent to `http://healthcare-doctor-service:8000/doctors/456`.
 
+Forwarding preserves trailing slashes and repeated query parameters, including
+their order and URL encoding. URL-decoded path data is escaped again before
+building the backend URL, so literal `?`, `#` and `%` remain path data. Requests
+containing `.` or `..` path segments (including URL-encoded forms), backslashes,
+or control characters are rejected with 403 before caching or forwarding. This
+prevents path normalization from reaching a different route after authorization.
+
 ### Redis route configuration cache
 
 We cache **one route per Redis key**, identified by the verified Project ID and

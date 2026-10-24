@@ -1,5 +1,6 @@
 import threading
 import time
+from urllib.parse import quote
 
 import httpx
 import redis
@@ -68,16 +69,29 @@ class GatewayRequestProxy:
     @staticmethod
     def build_target_url(route, route_path):
         normalized_route = RouteResolver.normalize_path(route.base_path)
-        normalized_request = RouteResolver.normalize_path(route_path)
+        # Django has already URL-decoded this path. Preserve its trailing slash,
+        # but reject segments that HTTP clients/backends can normalize into a
+        # different route after we have checked this route's permissions.
+        normalized_request = route_path if route_path.startswith('/') else '/' + route_path
+        if (any(part in {'.', '..'} for part in normalized_request.split('/'))
+                or '\\' in normalized_request
+                or any(ord(char) < 32 or ord(char) == 127 for char in normalized_request)):
+            raise ValueError('Unsafe request path.')
         if normalized_request != normalized_route and not normalized_request.startswith(f'{normalized_route}/'):
             raise ValueError('Request path does not match the configured public route.')
         # route_path is already the requested path after /gateway.
         # Public and backend paths are intentionally the same in ServLink.
-        return route.backend_service.base_url.rstrip('/') + normalized_request
+        # Encode path data so literal ?, # and % cannot become URL syntax.
+        return route.backend_service.base_url.rstrip('/') + quote(normalized_request, safe='/')
 
     @staticmethod
     def proxy(request, target_url):
         validate_target_url(target_url)
+        # QueryDict is a multimap; passing it as httpx params loses repeated
+        # values and rewrites ordering/encoding. Forward the original query.
+        query_string = request.META.get('QUERY_STRING', '')
+        if query_string:
+            target_url += '?' + quote(query_string, safe="!$&'()*+,-./:;=?@_%~[]")
         excluded = {'host', 'content-length', 'connection', 'keep-alive', 'transfer-encoding',
                     'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate',
                     'x-api-key', 'x-tenant-id', 'x-application-id', 'authorization'}
@@ -94,7 +108,6 @@ class GatewayRequestProxy:
                     url=target_url,
                     headers=headers,
                     content=request.body if request.body else None,
-                    params=request.GET,
                 )
             return response
         except httpx.TimeoutException:

@@ -93,9 +93,11 @@ class GatewayRoutingTests(APITestCase):
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        self.addCleanup(server.shutdown)
-        self.addCleanup(server.server_close)
-        self.addCleanup(lambda: thread.join(timeout=2))
+        def cleanup():
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+        self.addCleanup(cleanup)
         origin = f'http://127.0.0.1:{server.server_address[1]}'
         self.origins.append(origin)
         return origin, seen
@@ -106,6 +108,38 @@ class GatewayRoutingTests(APITestCase):
         response = self.client.get('/gateway/doctors/456?active=yes', **self.headers())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(seen, [('GET', '/doctors/456?active=yes')])
+
+    def test_query_preserves_repeated_values_order_and_encoding(self):
+        origin, seen = self.fake_backend()
+        self.route(url=origin + '/doctors')
+        query = 'tag=one&sort=name&tag=two&empty=&flag&q=a%20b&plus=%2B'
+        response = self.client.get('/gateway/doctors?' + query, **self.headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(seen, [('GET', '/doctors?' + query)])
+
+    def test_forwarding_preserves_trailing_slashes_and_encoded_path_data(self):
+        origin, seen = self.fake_backend()
+        self.route(url=origin + '/doctors')
+        for path in ['/doctors/', '/doctors/456/', '/doctors/a%3Fb%23c%25%20d/']:
+            with self.subTest(path=path):
+                response = self.client.get('/gateway' + path, **self.headers())
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(seen[-1], ('GET', path))
+
+    def test_dot_segments_cannot_bypass_another_routes_jwt_policy(self):
+        origin, seen = self.fake_backend()
+        self.route(url=origin + '/doctors')
+        self.route(path='/specialties', url=origin + '/specialties',
+                   methods=[('GET', 'api_key_and_jwt')])
+        self.assertEqual(
+            self.client.get('/gateway/specialties', **self.headers()).status_code, 401
+        )
+        for path in ['/doctors/../specialties', '/doctors/%2e%2e/specialties',
+                     '/doctors/./456', '/doctors/sub/../../specialties']:
+            with self.subTest(path=path):
+                response = self.client.get('/gateway' + path, **self.headers())
+                self.assertEqual(response.status_code, 403)
+        self.assertEqual(seen, [])
 
     def test_two_public_routes_share_one_service_origin(self):
         self.route(path='/doctors', url='http://127.0.0.1:9002/doctors')
