@@ -1,0 +1,32 @@
+name: Gateway four-topology benchmark
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/isolated-gateway-benchmark]
+    paths: ['benchmarks/**', '.github/workflows/gateway-benchmark.yml']
+permissions:
+  contents: read
+concurrency:
+  group: gateway-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install PyYAML==6.0.2
+      - name: Run four topologies sequentially on the same runner
+        run: python -m benchmarks.run
+      - name: Upload measurements and diagnostics (never tenant credentials)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gateway-four-topology-results
+          path: benchmarks/results/
+          retention-days: 14
+          if-no-files-found: warn
+
