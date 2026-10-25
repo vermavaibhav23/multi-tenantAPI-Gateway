@@ -30,6 +30,8 @@ class BenchmarkConfigurationTests(unittest.TestCase):
             self.assertEqual(gateway['cpus'], 1)
             self.assertNotIn('build', gateway)
             for name, service in services.items():
+                if name in ('mysql-1', 'mysql-2', 'mysql-3'):
+                    self.assertEqual(service['restart'], 'unless-stopped')
                 if name != 'load-balancer':
                     self.assertNotIn('ports', service)
             self.assertTrue(all(value is None for value in config['volumes'].values()))

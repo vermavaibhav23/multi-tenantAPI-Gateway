@@ -30,6 +30,8 @@ def generate(case):
         service['restart'] = 'no'
         services[name] = service
         if name in ('mysql-1', 'mysql-2', 'mysql-3'):
+            # MySQL Clone shuts down the recipient; Docker must restart it.
+            service['restart'] = 'unless-stopped'
             service['environment'] = {'MYSQL_ROOT_PASSWORD': 'benchmark-root', 'MYSQL_ROOT_HOST': '%'}
             if name == 'mysql-1':
                 service['environment'].update(MYSQL_DATABASE='gatescale_benchmark',
