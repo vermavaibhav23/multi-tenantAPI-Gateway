@@ -4,6 +4,47 @@ This opt-in experiment runs the real gateway, not an endpoint that bypasses it.
 Normal application files, settings, rate limits and Compose deployment are unchanged.
 The branch builds on the forwarding fixes in PR #4.
 
+## Measured results: 26 October 2026 (IST)
+
+The [full GitHub Actions run](https://github.com/vermavaibhav23/multi-tenantAPI-Gateway/actions/runs/40226915201)
+completed all four cases on commit `ef93adbd6179fa508175e5766a405fe524dcd6a1`.
+All 36 gateway trials passed: 57,629 successful measured requests, zero incorrect
+responses, zero HTTP 429 responses and zero dropped iterations. Each of the four
+backend controls also passed at 200 RPS.
+
+At 100 offered requests/second, medians across three 30-second trials were:
+
+| Setup | Successful RPS | p95 success (ms) | Range of trial p95 (ms) | Passed trials at 100 RPS |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline | 100.01 | 20.99 | 19.69-22.13 | 3/3 |
+| Redis Cluster | 100.01 | 22.65 | 22.31-25.91 | 3/3 |
+| MySQL replicas | 100.00 | 36.40 | 32.73-38.50 | 3/3 |
+| Both | 100.00 | 42.05 | 36.35-48.58 | 3/3 |
+
+The clusters worked but did not improve latency at this load. All components and
+k6 shared one 4-CPU runner with approximately 16 GiB RAM. These results establish
+behavior at the tested rates, not maximum or production capacity. Fixed case order,
+short trials and shared-host variation also limit comparisons.
+
+All three gateway upstreams answered the preflight probe. Both MySQL replicas
+received SELECTs (31,322/29,992 in the MySQL-only case; 30,584/30,747 in the combined
+case), and all three Redis primaries processed commands in both cluster cases.
+Counters include warmup, monitoring and Router metadata queries; they are not
+exact measured-request counts. Resource samples also include diagnostic probes
+and do not isolate load-generator CPU, so they alone cannot identify a bottleneck.
+
+Versioned evidence: [all 36 trials](reports/2026-10-26/comparison.json),
+[environment](reports/2026-10-26/environment.json), and
+[topology/counter checks](reports/2026-10-26/verification.json).
+Raw k6 summaries, logs and resource samples are attached to the run for 14 days.
+To repeat this exact measured commit, open that run and choose **Re-run all jobs**.
+The initial attempts exposed a benchmark restart-policy mistake and an inherited
+Router-image authentication defect; the fixes are described below. The normal
+deployment still uses the older Router image and needs that compatibility fix
+separately; this benchmark does not validate that unchanged deployment.
+
+## Experiment design
+
 | Case | Gateway | Redis | MySQL |
 | --- | --- | --- | --- |
 | baseline | 3 behind NGINX | 1 standalone | 1 server |

@@ -1,0 +1,40 @@
+{
+  "started_at": "20261025T193804Z",
+  "git_sha": "ef93adbd6179fa508175e5766a405fe524dcd6a1",
+  "cpu_count": 4,
+  "docker_memory_bytes": 16766414848,
+  "docker_version": "28.0.4",
+  "os": "Ubuntu 24.04.5 LTS",
+  "kernel": "6.17.0-1022-azure",
+  "parameters": {
+    "cases": [
+      "baseline",
+      "redis-cluster",
+      "mysql-replicas",
+      "combined"
+    ],
+    "rates": [
+      10,
+      50,
+      100
+    ],
+    "duration": 30,
+    "repeats": 3,
+    "skip_build": false
+  },
+  "gateway_instances": 3,
+  "gateway_workers_per_instance": 2,
+  "gateway_threads_per_worker": 4,
+  "gateway_cpu_limit_per_instance": 1,
+  "load_balancer": "NGINX round robin; retries disabled",
+  "tenants": 100,
+  "per_tenant_limit_per_minute": 2000,
+  "workload": "GET /products/{id}; 80% product 1, 20% distinct fixture IDs; real API-key and explicit permission checks",
+  "limitations": [
+    "Single host, shared CPU/memory and load generator",
+    "Short repeated trials, not a production-capacity or failover claim",
+    "API-key-only GETs; no JWT, business transactions or database write benchmark",
+    "Cluster cases add resources; per-node budgets are held constant, not total budgets",
+    "Requested hot ratio is not a measured cache-hit ratio; expiry and eviction can change it"
+  ]
+}
