@@ -91,6 +91,9 @@ PyMySQL authentication, before load could start. MySQL documents that defect
 as bug 35015376, fixed in its
 [8.0.33 release notes](https://dev.mysql.com/doc/relnotes/mysql-router/26.10/en/news-8-0-33.html).
 This image override is benchmark-only; the normal deployment file is unchanged.
+The [replica startup verification](https://github.com/vermavaibhav23/multi-tenantAPI-Gateway/actions/runs/40226546217)
+passed both replica topologies, including read-only alias checks and real gateway
+requests. Those five-second checks are setup validation, not capacity results.
 The script refuses an existing running/stopped benchmark project; inspect it before
 manually cleaning it up. Reusing retained volumes is a rerun, not a fresh-data trial.
 
