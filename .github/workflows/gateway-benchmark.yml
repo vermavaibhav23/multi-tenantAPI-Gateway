@@ -29,8 +29,8 @@ jobs:
       - name: Verify backend contract and three upstreams with lightweight stand-ins
         run: python -m benchmarks.smoke
   compare:
-    # Preparing/editing tests must not start a long load experiment.
-    if: github.event_name == 'workflow_dispatch'
+    # Full experiments require manual dispatch or an explicit opt-in commit.
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-benchmark]')
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 60
