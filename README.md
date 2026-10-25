@@ -1,4 +1,4 @@
-# ServLink â€” Multi-Tenant Backend-as-a-Service API Gateway
+# ServLink — Multi-Tenant Backend-as-a-Service API Gateway
 
 ServLink is a Django REST Framework gateway that lets business applications share domain-specific demo microservices (Healthcare, Banking, E-commerce). It uses API keys to identify applications, Redis Cluster-backed fixed-window rate limiting, optional JWT verification on configured HTTP methods, safe GET caching, and NGINX across three gateway replicas.
 
@@ -29,9 +29,9 @@ port with Group Replication BEFORE_AND_AFTER consistency.
 | RoutePermission | id, application, route, is_active | `(application, route)` |
 | ApplicationUser | id, application, email, password_hash, is_active, token_version | `(application, email)` |
 
-`BackendService â†’ Route` is 1:N: one DoctorService can expose `/doctors` and `/specialties`, each with its own Route while sharing the same BackendService base URL. `Route â†’ RouteMethod` is 1:N: one `/doctors` Route can expose GET (API key only) and DELETE (API key plus JWT) with independent policies. All routes in the same project must have distinct public base paths.
+`BackendService → Route` is 1:N: one DoctorService can expose `/doctors` and `/specialties`, each with its own Route while sharing the same BackendService base URL. `Route → RouteMethod` is 1:N: one `/doctors` Route can expose GET (API key only) and DELETE (API key plus JWT) with independent policies. All routes in the same project must have distinct public base paths.
 
-Existing `slug`, timestamp, description and key revocation fields are retained for compatibility even where omitted from the compact ER diagram. `Application â†’ APIKey` is one-to-one: issuing a replacement key rotates the stored hash, invalidating the previous value.
+Existing `slug`, timestamp, description and key revocation fields are retained for compatibility even where omitted from the compact ER diagram. `Application → APIKey` is one-to-one: issuing a replacement key rotates the stored hash, invalidating the previous value.
 
 **Important distinction:** RoutePermission grants application-level access to a whole route, not a user-level role. No matching RoutePermission rows means the application can access its project's routes by default; once any permissions exist for that application, only active grants allow access. RouteMethod controls HTTP method availability and basic JWT verification. Application-bound client-user JWTs are now implemented; role-based authorization (RBAC) and resource ownership checks are future enhancements.
 
