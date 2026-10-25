@@ -78,16 +78,26 @@ def generate(case):
     services['setup'] = {**deepcopy(gateway), 'command': ['sh', '-c',
         'i=0; until python manage.py migrate --noinput; do i=$$((i+1)); '
         'if [ "$$i" -ge 30 ]; then exit 1; fi; sleep 3; done; python -m benchmarks.seed']}
-    services['gateway'] = {**gateway,
+    gateway_instance = {**gateway,
         'command': ['gunicorn', 'gateway_project.wsgi:application', '--bind', '0.0.0.0:8000',
                     '--workers', '2', '--threads', '4', '--timeout', '30'],
         'depends_on': {'setup': {'condition': 'service_completed_successfully'},
                        'benchmark-backend': {'condition': 'service_started'}},
-        'ports': ['127.0.0.1:18080:8000'],
         'healthcheck': {'test': ['CMD', 'python', '-c',
             "import http.client; c=http.client.HTTPConnection('localhost',8000); "
             "c.request('GET','/gateway/products'); assert c.getresponse().status == 401"],
             'interval': '5s', 'timeout': '3s', 'retries': 30},
+    }
+    for index in range(1, 4):
+        services[f'gateway-{index}'] = deepcopy(gateway_instance)
+    services['load-balancer'] = {
+        'image': 'nginx:1.27-alpine',
+        'volumes': ['./benchmarks/load-balancer.conf:/etc/nginx/nginx.conf:ro'],
+        'ports': ['127.0.0.1:18080:8000'],
+        'depends_on': {f'gateway-{i}': {'condition': 'service_healthy'} for i in range(1, 4)},
+        'healthcheck': {'test': ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:8000/healthz'],
+                        'interval': '5s', 'timeout': '3s', 'retries': 30},
+        'mem_limit': '128m', 'cpus': 0.5,
     }
     services['benchmark-backend'] = {
         'image': 'nginx:1.27-alpine',

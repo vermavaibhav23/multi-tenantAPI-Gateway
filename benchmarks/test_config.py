@@ -12,9 +12,14 @@ class BenchmarkConfigurationTests(unittest.TestCase):
         for case, (redis_cluster, mysql_cluster) in CASES.items():
             config = json.loads(generate(case).read_text())
             services = config['services']
-            gateway = services['gateway']
+            gateway = services['gateway-1']
             self.assertEqual(config['name'], f'gatescale-bench-{case}')
-            self.assertEqual(gateway['ports'], ['127.0.0.1:18080:8000'])
+            self.assertEqual(services['load-balancer']['ports'], ['127.0.0.1:18080:8000'])
+            self.assertEqual(set(services['load-balancer']['depends_on']),
+                             {'gateway-1', 'gateway-2', 'gateway-3'})
+            for index in range(1, 4):
+                self.assertEqual(services[f'gateway-{index}'], gateway)
+            self.assertNotIn('gateway', services)
             self.assertEqual(gateway['environment']['MYSQL_DATABASE'], 'gatescale_benchmark')
             self.assertEqual(gateway['environment']['REDIS_CLUSTER_ENABLED'], str(redis_cluster))
             self.assertEqual(gateway['environment']['MYSQL_CLUSTER_ENABLED'], str(mysql_cluster))
@@ -25,7 +30,7 @@ class BenchmarkConfigurationTests(unittest.TestCase):
             self.assertEqual(gateway['cpus'], 1)
             self.assertNotIn('build', gateway)
             for name, service in services.items():
-                if name != 'gateway':
+                if name != 'load-balancer':
                     self.assertNotIn('ports', service)
             self.assertTrue(all(value is None for value in config['volumes'].values()))
 
