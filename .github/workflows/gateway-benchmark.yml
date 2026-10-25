@@ -30,7 +30,7 @@ jobs:
         run: python -m benchmarks.smoke
   compare:
     # Full experiments require manual dispatch or an explicit opt-in commit.
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-benchmark]')
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-benchmark]') || contains(github.event.head_commit.message, '[check-replicas]')
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -41,7 +41,11 @@ jobs:
           python-version: '3.12'
       - run: pip install PyYAML==6.0.2
       - name: Run four topologies sequentially on the same runner
+        if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-benchmark]')
         run: python -m benchmarks.run
+      - name: Check replica startup and short real-gateway load
+        if: github.event_name != 'workflow_dispatch' && contains(github.event.head_commit.message, '[check-replicas]') && !contains(github.event.head_commit.message, '[run-benchmark]')
+        run: python -m benchmarks.run --cases mysql-replicas combined --rates 10 --duration 5 --repeats 1
       - name: Upload measurements and diagnostics (never tenant credentials)
         if: always()
         uses: actions/upload-artifact@v4

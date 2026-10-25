@@ -53,10 +53,15 @@ use a separate response-cache-disabled scenario; do not invent unsupported suffi
 The `Gateway four-topology benchmark` GitHub Actions workflow runs all four cases
 sequentially on the same hosted runner. It uploads results, topology checks, MySQL
 query counters, Redis counters and sampled container CPU/memory usage. It never
-uploads API keys. Branch pushes run only configuration and lightweight NGINX
-functional checks, using gateway stand-ins. They do NOT launch the four load tests.
-After the workflow exists on the default branch, use Actions > Gateway four-topology
+uploads API keys. Ordinary branch pushes run configuration and lightweight NGINX
+functional checks, using gateway stand-ins. To launch the full experiment before
+merging, push a change under benchmarks/ or the workflow file to
+codex/isolated-gateway-benchmark with `[run-benchmark]` in the head commit message.
+This explicit opt-in runs all four cases after validation. After the workflow
+exists on the default branch, use Actions > Gateway four-topology
 benchmark > Run workflow to launch the full experiment on the selected branch.
+For startup troubleshooting only, `[check-replicas]` runs a five-second, 10 RPS
+check of the two MySQL-replica cases. It is not the full comparison.
 
 Alternatively, on a Linux Docker host with at least 7 GiB available to Docker:
 
@@ -78,6 +83,14 @@ gateways have no published host ports. Databases and Redis
 have no published host ports. Credentials are synthetic and only for this deployment.
 Database name is forced to gatescale_benchmark. Containers are stopped after each
 case, while project-scoped named volumes remain available for inspection.
+MySQL containers retain an automatic restart policy because replica initialization
+uses MySQL Clone, which shuts down and restarts each recipient server.
+The benchmark uses Oracle's MySQL Router 8.0.46 image. The inherited Docker Hub
+Router image failed with `caching sha2: Unknown packet for public key` during
+PyMySQL authentication, before load could start. MySQL documents that defect
+as bug 35015376, fixed in its
+[8.0.33 release notes](https://dev.mysql.com/doc/relnotes/mysql-router/26.10/en/news-8-0-33.html).
+This image override is benchmark-only; the normal deployment file is unchanged.
 The script refuses an existing running/stopped benchmark project; inspect it before
 manually cleaning it up. Reusing retained volumes is a rerun, not a fresh-data trial.
 

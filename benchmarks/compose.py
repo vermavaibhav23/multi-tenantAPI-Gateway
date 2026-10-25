@@ -41,6 +41,8 @@ def generate(case):
         elif name == 'mysql-cluster-init':
             service['environment'] = {'MYSQL_ROOT_PASSWORD': 'benchmark-root'}
         elif name == 'mysql-router':
+            # The older Docker Hub image has a PyMySQL authentication bug.
+            service['image'] = 'container-registry.oracle.com/mysql/community-router:8.0.46'
             service['environment']['MYSQL_PASSWORD'] = 'benchmark-root'
             service.update(mem_limit='256m', cpus=0.25)
         elif name.startswith('redis-node-'):
