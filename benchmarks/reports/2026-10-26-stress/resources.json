@@ -1,0 +1,707 @@
+{
+  "note": "Container CPU: 100% is one CPU core. Host busy percentage spans all four cores. Samples omit first five seconds and final second of each request window.",
+  "sampler_gaps_by_case": {
+    "baseline": 3,
+    "redis-cluster": 1,
+    "mysql-replicas": 1,
+    "combined": 2
+  },
+  "trials": [
+    {
+      "run": "baseline-r1-100rps",
+      "phase": "load",
+      "samples": 9,
+      "host_busy_percent_median": 27.62609902822767,
+      "container_cpu_percent_median": {
+        "k6": 6.49,
+        "load-balancer-1": 2.66,
+        "gateway-2-1": 23.03,
+        "gateway-3-1": 25.4,
+        "gateway-1-1": 22.86,
+        "mysql-1-1": 6.72,
+        "benchmark-backend-1": 0.34,
+        "redis-single-1": 2.48
+      },
+      "k6": {
+        "cpu_percent_median": 6.49,
+        "cpu_percent_p95": 6.8340000000000005,
+        "memory_percent_max": 12.2
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 24417
+      }
+    },
+    {
+      "run": "baseline-r1-200rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 56.376707536055534,
+      "container_cpu_percent_median": {
+        "k6": 13.245000000000001,
+        "load-balancer-1": 5.455,
+        "gateway-2-1": 55.605000000000004,
+        "gateway-3-1": 86.83500000000001,
+        "gateway-1-1": 59.28,
+        "mysql-1-1": 15.195,
+        "benchmark-backend-1": 0.675,
+        "redis-single-1": 5.14
+      },
+      "k6": {
+        "cpu_percent_median": 13.245000000000001,
+        "cpu_percent_p95": 13.6345,
+        "memory_percent_max": 13.9
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 48413
+      }
+    },
+    {
+      "run": "baseline-r1-400rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 92.64287336816366,
+      "container_cpu_percent_median": {
+        "k6": 20.045,
+        "load-balancer-1": 7.415,
+        "gateway-2-1": 100.755,
+        "gateway-3-1": 100.63499999999999,
+        "gateway-1-1": 100.575,
+        "mysql-1-1": 23.675,
+        "benchmark-backend-1": 0.995,
+        "redis-single-1": 6.675000000000001
+      },
+      "k6": {
+        "cpu_percent_median": 20.045,
+        "cpu_percent_p95": 26.5065,
+        "memory_percent_max": 14.73
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 71896
+      }
+    },
+    {
+      "run": "baseline-r1-800rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 92.74319836053989,
+      "container_cpu_percent_median": {
+        "k6": 17.96,
+        "load-balancer-1": 7.449999999999999,
+        "gateway-2-1": 101.37,
+        "gateway-3-1": 100.94,
+        "gateway-1-1": 100.07,
+        "mysql-1-1": 23.73,
+        "benchmark-backend-1": 1.01,
+        "redis-single-1": 6.2
+      },
+      "k6": {
+        "cpu_percent_median": 17.96,
+        "cpu_percent_p95": 22.898999999999994,
+        "memory_percent_max": 14.49
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 71813
+      }
+    },
+    {
+      "run": "baseline-r1-1000rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 92.68424954471466,
+      "container_cpu_percent_median": {
+        "k6": 17.79,
+        "load-balancer-1": 7.375,
+        "gateway-2-1": 100.36,
+        "gateway-3-1": 102.31,
+        "gateway-1-1": 101.205,
+        "mysql-1-1": 23.29,
+        "benchmark-backend-1": 0.995,
+        "redis-single-1": 6.68
+      },
+      "k6": {
+        "cpu_percent_median": 17.79,
+        "cpu_percent_p95": 22.044499999999996,
+        "memory_percent_max": 14.68
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 72163
+      }
+    },
+    {
+      "run": "baseline-recovery-100rps",
+      "phase": "recovery",
+      "samples": 10,
+      "host_busy_percent_median": 27.691367809259624,
+      "container_cpu_percent_median": {
+        "k6": 6.4399999999999995,
+        "load-balancer-1": 2.815,
+        "gateway-2-1": 36.095,
+        "gateway-3-1": 25.045,
+        "gateway-1-1": 26.52,
+        "mysql-1-1": 7.0,
+        "benchmark-backend-1": 0.345,
+        "redis-single-1": 2.6550000000000002
+      },
+      "k6": {
+        "cpu_percent_median": 6.4399999999999995,
+        "cpu_percent_p95": 6.692499999999999,
+        "memory_percent_max": 12.27
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 24408
+      }
+    },
+    {
+      "run": "redis-cluster-r1-100rps",
+      "phase": "load",
+      "samples": 9,
+      "host_busy_percent_median": 32.608695652173914,
+      "container_cpu_percent_median": {
+        "k6": 6.54,
+        "load-balancer-1": 2.71,
+        "gateway-2-1": 25.27,
+        "gateway-1-1": 24.4,
+        "gateway-3-1": 25.1,
+        "redis-node-3-1": 1.02,
+        "redis-node-5-1": 3.74,
+        "redis-node-6-1": 0.68,
+        "mysql-1-1": 7.22,
+        "benchmark-backend-1": 0.34,
+        "redis-node-1-1": 1.51,
+        "redis-node-4-1": 0.7,
+        "redis-node-2-1": 4.87
+      },
+      "k6": {
+        "cpu_percent_median": 6.54,
+        "cpu_percent_p95": 6.952,
+        "memory_percent_max": 12.0
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 24417
+      }
+    },
+    {
+      "run": "redis-cluster-r1-200rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 62.890208848419064,
+      "container_cpu_percent_median": {
+        "k6": 13.745000000000001,
+        "load-balancer-1": 5.6850000000000005,
+        "gateway-2-1": 57.925,
+        "gateway-1-1": 63.834999999999994,
+        "gateway-3-1": 56.465,
+        "redis-node-3-1": 1.875,
+        "redis-node-5-1": 1.0150000000000001,
+        "redis-node-6-1": 1.67,
+        "mysql-1-1": 15.215,
+        "benchmark-backend-1": 0.685,
+        "redis-node-1-1": 2.74,
+        "redis-node-4-1": 1.02,
+        "redis-node-2-1": 2.84
+      },
+      "k6": {
+        "cpu_percent_median": 13.745000000000001,
+        "cpu_percent_p95": 14.373,
+        "memory_percent_max": 14.05
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 48415
+      }
+    },
+    {
+      "run": "redis-cluster-r1-400rps",
+      "phase": "load",
+      "samples": 9,
+      "host_busy_percent_median": 95.0244335850733,
+      "container_cpu_percent_median": {
+        "k6": 16.78,
+        "load-balancer-1": 7.02,
+        "gateway-2-1": 100.16,
+        "gateway-1-1": 95.91,
+        "gateway-3-1": 101.14,
+        "redis-node-3-1": 2.34,
+        "redis-node-5-1": 1.14,
+        "redis-node-6-1": 1.18,
+        "mysql-1-1": 22.78,
+        "benchmark-backend-1": 0.92,
+        "redis-node-1-1": 4.05,
+        "redis-node-4-1": 1.22,
+        "redis-node-2-1": 5.81
+      },
+      "k6": {
+        "cpu_percent_median": 16.78,
+        "cpu_percent_p95": 18.46,
+        "memory_percent_max": 14.49
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 69042
+      }
+    },
+    {
+      "run": "redis-cluster-r1-800rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 95.30626812463633,
+      "container_cpu_percent_median": {
+        "k6": 20.57,
+        "load-balancer-1": 7.225,
+        "gateway-2-1": 98.61,
+        "gateway-1-1": 99.78,
+        "gateway-3-1": 99.495,
+        "redis-node-3-1": 2.1950000000000003,
+        "redis-node-5-1": 1.53,
+        "redis-node-6-1": 1.1949999999999998,
+        "mysql-1-1": 22.060000000000002,
+        "benchmark-backend-1": 0.965,
+        "redis-node-1-1": 3.47,
+        "redis-node-4-1": 1.145,
+        "redis-node-2-1": 3.62
+      },
+      "k6": {
+        "cpu_percent_median": 20.57,
+        "cpu_percent_p95": 25.4905,
+        "memory_percent_max": 14.47
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 69298
+      }
+    },
+    {
+      "run": "redis-cluster-r1-1000rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 95.72413232886093,
+      "container_cpu_percent_median": {
+        "k6": 16.985,
+        "load-balancer-1": 7.145,
+        "gateway-2-1": 100.015,
+        "gateway-1-1": 99.775,
+        "gateway-3-1": 100.66499999999999,
+        "redis-node-3-1": 2.33,
+        "redis-node-5-1": 1.15,
+        "redis-node-6-1": 1.165,
+        "mysql-1-1": 22.61,
+        "benchmark-backend-1": 0.9450000000000001,
+        "redis-node-1-1": 3.5,
+        "redis-node-4-1": 1.1949999999999998,
+        "redis-node-2-1": 3.365
+      },
+      "k6": {
+        "cpu_percent_median": 16.985,
+        "cpu_percent_p95": 20.968999999999994,
+        "memory_percent_max": 14.49
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 69661
+      }
+    },
+    {
+      "run": "redis-cluster-recovery-100rps",
+      "phase": "recovery",
+      "samples": 9,
+      "host_busy_percent_median": 31.58383650719926,
+      "container_cpu_percent_median": {
+        "k6": 6.73,
+        "load-balancer-1": 2.8,
+        "gateway-2-1": 26.39,
+        "gateway-1-1": 26.08,
+        "gateway-3-1": 25.46,
+        "redis-node-3-1": 1.04,
+        "redis-node-5-1": 0.78,
+        "redis-node-6-1": 0.75,
+        "mysql-1-1": 7.05,
+        "benchmark-backend-1": 0.34,
+        "redis-node-1-1": 1.52,
+        "redis-node-4-1": 0.76,
+        "redis-node-2-1": 4.06
+      },
+      "k6": {
+        "cpu_percent_median": 6.73,
+        "cpu_percent_p95": 14.572,
+        "memory_percent_max": 13.57
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 24408
+      }
+    },
+    {
+      "run": "mysql-replicas-r1-100rps",
+      "phase": "load",
+      "samples": 9,
+      "host_busy_percent_median": 41.9894787183166,
+      "container_cpu_percent_median": {
+        "k6": 6.61,
+        "load-balancer-1": 2.89,
+        "gateway-3-1": 26.4,
+        "gateway-1-1": 27.03,
+        "gateway-2-1": 25.69,
+        "mysql-router-1": 8.1,
+        "mysql-2-1": 18.27,
+        "benchmark-backend-1": 0.37,
+        "mysql-3-1": 18.55,
+        "redis-single-1": 2.75,
+        "mysql-1-1": 13.79
+      },
+      "k6": {
+        "cpu_percent_median": 6.61,
+        "cpu_percent_p95": 11.709999999999997,
+        "memory_percent_max": 12.22
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 1005,
+        "mysql-2": 13155,
+        "mysql-3": 11267
+      }
+    },
+    {
+      "run": "mysql-replicas-r1-200rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 86.25512843194244,
+      "container_cpu_percent_median": {
+        "k6": 13.605,
+        "load-balancer-1": 5.295,
+        "gateway-3-1": 63.39,
+        "gateway-1-1": 63.11,
+        "gateway-2-1": 67.67500000000001,
+        "mysql-router-1": 14.495000000000001,
+        "mysql-2-1": 32.205,
+        "benchmark-backend-1": 0.685,
+        "mysql-3-1": 32.36,
+        "redis-single-1": 5.16,
+        "mysql-1-1": 22.185
+      },
+      "k6": {
+        "cpu_percent_median": 13.605,
+        "cpu_percent_p95": 18.49149999999999,
+        "memory_percent_max": 13.83
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 964,
+        "mysql-2": 24147,
+        "mysql-3": 24265
+      }
+    },
+    {
+      "run": "mysql-replicas-r1-400rps",
+      "phase": "load",
+      "samples": 9,
+      "host_busy_percent_median": 99.20529801324503,
+      "container_cpu_percent_median": {
+        "k6": 14.91,
+        "load-balancer-1": 5.83,
+        "gateway-3-1": 85.85,
+        "gateway-1-1": 88.33,
+        "gateway-2-1": 87.05,
+        "mysql-router-1": 15.97,
+        "mysql-2-1": 30.85,
+        "benchmark-backend-1": 0.8,
+        "mysql-3-1": 29.47,
+        "redis-single-1": 5.34,
+        "mysql-1-1": 17.54
+      },
+      "k6": {
+        "cpu_percent_median": 14.91,
+        "cpu_percent_p95": 17.991999999999997,
+        "memory_percent_max": 14.51
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 930,
+        "mysql-2": 29116,
+        "mysql-3": 29157
+      }
+    },
+    {
+      "run": "mysql-replicas-r1-800rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 99.24676647876237,
+      "container_cpu_percent_median": {
+        "k6": 14.675,
+        "load-balancer-1": 5.875,
+        "gateway-3-1": 85.49000000000001,
+        "gateway-1-1": 88.32,
+        "gateway-2-1": 89.9,
+        "mysql-router-1": 16.165,
+        "mysql-2-1": 30.285,
+        "benchmark-backend-1": 0.79,
+        "mysql-3-1": 30.36,
+        "redis-single-1": 5.295,
+        "mysql-1-1": 16.575
+      },
+      "k6": {
+        "cpu_percent_median": 14.675,
+        "cpu_percent_p95": 21.65299999999999,
+        "memory_percent_max": 14.25
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 905,
+        "mysql-2": 28877,
+        "mysql-3": 29585
+      }
+    },
+    {
+      "run": "mysql-replicas-r1-1000rps",
+      "phase": "load",
+      "samples": 9,
+      "host_busy_percent_median": 99.42170818505338,
+      "container_cpu_percent_median": {
+        "k6": 15.0,
+        "load-balancer-1": 5.82,
+        "gateway-3-1": 89.34,
+        "gateway-1-1": 87.14,
+        "gateway-2-1": 87.15,
+        "mysql-router-1": 16.08,
+        "mysql-2-1": 30.14,
+        "benchmark-backend-1": 0.78,
+        "mysql-3-1": 29.78,
+        "redis-single-1": 5.42,
+        "mysql-1-1": 16.14
+      },
+      "k6": {
+        "cpu_percent_median": 15.0,
+        "cpu_percent_p95": 19.415999999999997,
+        "memory_percent_max": 14.46
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 922,
+        "mysql-2": 29634,
+        "mysql-3": 29336
+      }
+    },
+    {
+      "run": "mysql-replicas-recovery-100rps",
+      "phase": "recovery",
+      "samples": 10,
+      "host_busy_percent_median": 41.38941822691344,
+      "container_cpu_percent_median": {
+        "k6": 7.08,
+        "load-balancer-1": 2.9050000000000002,
+        "gateway-3-1": 35.62,
+        "gateway-1-1": 26.695,
+        "gateway-2-1": 26.83,
+        "mysql-router-1": 8.57,
+        "mysql-2-1": 18.119999999999997,
+        "benchmark-backend-1": 0.365,
+        "mysql-3-1": 18.425,
+        "redis-single-1": 2.9450000000000003,
+        "mysql-1-1": 13.995000000000001
+      },
+      "k6": {
+        "cpu_percent_median": 7.08,
+        "cpu_percent_p95": 7.528,
+        "memory_percent_max": 12.41
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 997,
+        "mysql-2": 12538,
+        "mysql-3": 11872
+      }
+    },
+    {
+      "run": "combined-r1-100rps",
+      "phase": "load",
+      "samples": 9,
+      "host_busy_percent_median": 47.61003312825367,
+      "container_cpu_percent_median": {
+        "k6": 7.14,
+        "load-balancer-1": 2.92,
+        "gateway-2-1": 28.01,
+        "gateway-3-1": 26.73,
+        "gateway-1-1": 27.52,
+        "mysql-router-1": 8.15,
+        "benchmark-backend-1": 0.38,
+        "redis-node-6-1": 0.76,
+        "redis-node-5-1": 0.77,
+        "redis-node-1-1": 1.59,
+        "redis-node-2-1": 1.72,
+        "mysql-2-1": 19.92,
+        "redis-node-4-1": 0.81,
+        "mysql-3-1": 17.91,
+        "redis-node-3-1": 1.11,
+        "mysql-1-1": 13.78
+      },
+      "k6": {
+        "cpu_percent_median": 7.14,
+        "cpu_percent_p95": 14.818000000000001,
+        "memory_percent_max": 12.21
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 1013,
+        "mysql-2": 13756,
+        "mysql-3": 10666
+      }
+    },
+    {
+      "run": "combined-r1-200rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 92.00371990548567,
+      "container_cpu_percent_median": {
+        "k6": 13.879999999999999,
+        "load-balancer-1": 5.32,
+        "gateway-2-1": 69.465,
+        "gateway-3-1": 67.16,
+        "gateway-1-1": 67.01,
+        "mysql-router-1": 14.66,
+        "benchmark-backend-1": 0.7,
+        "redis-node-6-1": 1.065,
+        "redis-node-5-1": 1.99,
+        "redis-node-1-1": 3.83,
+        "redis-node-2-1": 2.925,
+        "mysql-2-1": 30.41,
+        "redis-node-4-1": 1.025,
+        "mysql-3-1": 31.345,
+        "redis-node-3-1": 1.8250000000000002,
+        "mysql-1-1": 19.32
+      },
+      "k6": {
+        "cpu_percent_median": 13.879999999999999,
+        "cpu_percent_p95": 14.9135,
+        "memory_percent_max": 13.85
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 948,
+        "mysql-2": 24052,
+        "mysql-3": 24362
+      }
+    },
+    {
+      "run": "combined-r1-400rps",
+      "phase": "load",
+      "samples": 9,
+      "host_busy_percent_median": 99.60801393728222,
+      "container_cpu_percent_median": {
+        "k6": 15.57,
+        "load-balancer-1": 5.59,
+        "gateway-2-1": 80.81,
+        "gateway-3-1": 81.4,
+        "gateway-1-1": 82.54,
+        "mysql-router-1": 15.83,
+        "benchmark-backend-1": 0.79,
+        "redis-node-6-1": 1.06,
+        "redis-node-5-1": 1.11,
+        "redis-node-1-1": 2.96,
+        "redis-node-2-1": 2.92,
+        "mysql-2-1": 28.36,
+        "redis-node-4-1": 1.1,
+        "mysql-3-1": 29.5,
+        "redis-node-3-1": 2.09,
+        "mysql-1-1": 16.67
+      },
+      "k6": {
+        "cpu_percent_median": 15.57,
+        "cpu_percent_p95": 22.246,
+        "memory_percent_max": 14.64
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 938,
+        "mysql-2": 27358,
+        "mysql-3": 27365
+      }
+    },
+    {
+      "run": "combined-r1-800rps",
+      "phase": "load",
+      "samples": 10,
+      "host_busy_percent_median": 99.56200622962027,
+      "container_cpu_percent_median": {
+        "k6": 13.86,
+        "load-balancer-1": 5.765000000000001,
+        "gateway-2-1": 85.47,
+        "gateway-3-1": 80.85499999999999,
+        "gateway-1-1": 86.07,
+        "mysql-router-1": 15.085,
+        "benchmark-backend-1": 0.785,
+        "redis-node-6-1": 4.275,
+        "redis-node-5-1": 1.0750000000000002,
+        "redis-node-1-1": 2.9050000000000002,
+        "redis-node-2-1": 3.04,
+        "mysql-2-1": 28.880000000000003,
+        "redis-node-4-1": 2.6799999999999997,
+        "mysql-3-1": 27.235,
+        "redis-node-3-1": 2.07,
+        "mysql-1-1": 16.700000000000003
+      },
+      "k6": {
+        "cpu_percent_median": 13.86,
+        "cpu_percent_p95": 18.357499999999995,
+        "memory_percent_max": 14.04
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 921,
+        "mysql-2": 27297,
+        "mysql-3": 27584
+      }
+    },
+    {
+      "run": "combined-r1-1000rps",
+      "phase": "load",
+      "samples": 9,
+      "host_busy_percent_median": 99.60387323943662,
+      "container_cpu_percent_median": {
+        "k6": 15.1,
+        "load-balancer-1": 5.52,
+        "gateway-2-1": 84.14,
+        "gateway-3-1": 80.66,
+        "gateway-1-1": 86.73,
+        "mysql-router-1": 15.23,
+        "benchmark-backend-1": 0.78,
+        "redis-node-6-1": 1.06,
+        "redis-node-5-1": 1.1,
+        "redis-node-1-1": 2.91,
+        "redis-node-2-1": 3.3,
+        "mysql-2-1": 30.27,
+        "redis-node-4-1": 1.05,
+        "mysql-3-1": 29.43,
+        "redis-node-3-1": 1.91,
+        "mysql-1-1": 15.94
+      },
+      "k6": {
+        "cpu_percent_median": 15.1,
+        "cpu_percent_p95": 22.72,
+        "memory_percent_max": 14.46
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 905,
+        "mysql-2": 27406,
+        "mysql-3": 27669
+      }
+    },
+    {
+      "run": "combined-recovery-100rps",
+      "phase": "recovery",
+      "samples": 10,
+      "host_busy_percent_median": 47.473782260996,
+      "container_cpu_percent_median": {
+        "k6": 7.27,
+        "load-balancer-1": 2.95,
+        "gateway-2-1": 28.765,
+        "gateway-3-1": 28.314999999999998,
+        "gateway-1-1": 28.085,
+        "mysql-router-1": 8.66,
+        "benchmark-backend-1": 0.365,
+        "redis-node-6-1": 0.81,
+        "redis-node-5-1": 0.8300000000000001,
+        "redis-node-1-1": 1.69,
+        "redis-node-2-1": 1.7,
+        "mysql-2-1": 17.775,
+        "redis-node-4-1": 0.835,
+        "mysql-3-1": 19.384999999999998,
+        "redis-node-3-1": 1.2850000000000001,
+        "mysql-1-1": 14.335
+      },
+      "k6": {
+        "cpu_percent_median": 7.27,
+        "cpu_percent_p95": 15.56,
+        "memory_percent_max": 13.4
+      },
+      "mysql_select_deltas": {
+        "mysql-1": 997,
+        "mysql-2": 11697,
+        "mysql-3": 12709
+      }
+    }
+  ]
+}

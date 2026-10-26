@@ -1,0 +1,136 @@
+{
+  "run_url": "https://github.com/vermavaibhav23/multi-tenantAPI-Gateway/actions/runs/40226915201",
+  "measured_commit": "ef93adbd6179fa508175e5766a405fe524dcd6a1",
+  "measured_gateway_trials": 36,
+  "successful_measured_requests": 57629,
+  "invalid_responses": 0,
+  "rate_limited_responses": 0,
+  "dropped_iterations": 0,
+  "counter_note": "Deltas include warmup, monitoring and Router metadata queries, not just measured requests.",
+  "cases": {
+    "baseline": {
+      "passed_trials": 9,
+      "backend_control_rps": 200,
+      "backend_control_valid_fraction": 1,
+      "gateway_upstream_probe_counts": [
+        10,
+        10,
+        10
+      ],
+      "read_alias_is_read_only": null,
+      "mysql_select_deltas": {
+        "mysql-1": 61284
+      },
+      "redis_command_deltas": {
+        "redis-single": {
+          "role": "master",
+          "commands": 80714
+        }
+      }
+    },
+    "redis-cluster": {
+      "passed_trials": 9,
+      "backend_control_rps": 200,
+      "backend_control_valid_fraction": 1,
+      "gateway_upstream_probe_counts": [
+        10,
+        10,
+        10
+      ],
+      "read_alias_is_read_only": null,
+      "mysql_select_deltas": {
+        "mysql-1": 61291
+      },
+      "redis_command_deltas": {
+        "redis-node-1:6379": {
+          "role": "master",
+          "commands": 32825
+        },
+        "redis-node-5:6379": {
+          "role": "slave",
+          "commands": 8045
+        },
+        "redis-node-2:6379": {
+          "role": "master",
+          "commands": 32791
+        },
+        "redis-node-6:6379": {
+          "role": "slave",
+          "commands": 8073
+        },
+        "redis-node-3:6379": {
+          "role": "master",
+          "commands": 16528
+        },
+        "redis-node-4:6379": {
+          "role": "slave",
+          "commands": 7914
+        }
+      }
+    },
+    "mysql-replicas": {
+      "passed_trials": 9,
+      "backend_control_rps": 200,
+      "backend_control_valid_fraction": 1,
+      "gateway_upstream_probe_counts": [
+        10,
+        10,
+        10
+      ],
+      "read_alias_is_read_only": 1,
+      "mysql_select_deltas": {
+        "mysql-1": 5409,
+        "mysql-2": 31322,
+        "mysql-3": 29992
+      },
+      "redis_command_deltas": {
+        "redis-single": {
+          "role": "master",
+          "commands": 80704
+        }
+      }
+    },
+    "combined": {
+      "passed_trials": 9,
+      "backend_control_rps": 200,
+      "backend_control_valid_fraction": 1,
+      "gateway_upstream_probe_counts": [
+        10,
+        10,
+        10
+      ],
+      "read_alias_is_read_only": 1,
+      "mysql_select_deltas": {
+        "mysql-1": 5452,
+        "mysql-2": 30584,
+        "mysql-3": 30747
+      },
+      "redis_command_deltas": {
+        "redis-node-1:6379": {
+          "role": "master",
+          "commands": 32721
+        },
+        "redis-node-5:6379": {
+          "role": "slave",
+          "commands": 8000
+        },
+        "redis-node-2:6379": {
+          "role": "master",
+          "commands": 32370
+        },
+        "redis-node-6:6379": {
+          "role": "slave",
+          "commands": 7851
+        },
+        "redis-node-3:6379": {
+          "role": "master",
+          "commands": 17068
+        },
+        "redis-node-4:6379": {
+          "role": "slave",
+          "commands": 8197
+        }
+      }
+    }
+  }
+}

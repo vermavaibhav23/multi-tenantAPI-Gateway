@@ -436,3 +436,23 @@ docker compose config --quiet
 ```
 
 The Docker demo is an infrastructure/routing demonstration rather than a finished production BaaS deployment.
+
+## Controlled load testing
+
+The [isolated k6 benchmark](benchmarks/README.md) compares standalone Redis/MySQL,
+Redis Cluster, MySQL read replicas, and both together, with three gateways in every
+case. The [GitHub Actions experiment](https://github.com/vermavaibhav23/multi-tenantAPI-Gateway/actions/runs/40226915201)
+passed all 36 trials at 10, 50 and 100 requests/second with caching and rate limiting
+enabled. At 100 RPS, median p95 values were 20.99, 22.65, 36.40 and 42.05 ms,
+respectively. Clustering did not reduce latency at this tested load. These are short
+fixture-API measurements on one shared runner, not production-capacity claims.
+See the benchmark README for raw measurements, setup fixes, limitations and reruns.
+
+A subsequent [stress experiment](https://github.com/vermavaibhav23/multi-tenantAPI-Gateway/actions/runs/40303601383)
+increased offered load to 1,000 RPS. All four configurations kept up at 200 RPS and
+overloaded at 400 RPS or higher. At 1,000 offered RPS, completed throughput plateaued
+at approximately 293/280/238/223 RPS, with substantial dropped iterations.
+CPU evidence points to gateway CPU quotas and shared-runner contention; clustering
+did not raise observed capacity under these allocations. All four recovered when
+load returned to 100 RPS. These overload plateaus are not loss-free production
+capacity. The benchmark README includes latency, resource evidence and limitations.
