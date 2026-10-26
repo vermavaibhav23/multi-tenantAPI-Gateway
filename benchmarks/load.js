@@ -13,12 +13,21 @@ const successfulDuration = new Trend('successful_duration', true);
 const limited = new Rate('rate_limited');
 const successes = new Counter('successful_requests');
 const completion = new Trend('completion_elapsed_ms');
+const completed = new Counter('completed_requests');
+const serverErrors = new Counter('server_errors');
+const clientErrors = new Counter('client_errors');
+const transportErrors = new Counter('transport_errors');
+const allDuration = new Trend('all_request_duration', true);
+const requestStarted = new Trend('request_start_epoch_ms');
+const requestFinished = new Trend('request_finish_epoch_ms');
+const allocatedVUs = Number(__ENV.PREALLOCATED_VUS || 20);
+const maximumVUs = Number(__ENV.MAX_VUS || 200);
 
 export const options = {
   scenarios: {
     traffic: {
       executor: 'constant-arrival-rate', rate, timeUnit: '1s',
-      duration: __ENV.DURATION || '30s', preAllocatedVUs: 20, maxVUs: 200,
+      duration: __ENV.DURATION || '30s', preAllocatedVUs: allocatedVUs, maxVUs: maximumVUs,
       gracefulStop: '15s',
     },
   },
@@ -27,7 +36,7 @@ export const options = {
     valid_responses: ['rate>0.99'], rate_limited: ['rate==0'],
     dropped_iterations: ['count==0'],
   },
-  summaryTrendStats: ['avg', 'p(50)', 'p(95)', 'p(99)', 'max'],
+  summaryTrendStats: ['min', 'avg', 'p(50)', 'p(95)', 'p(99)', 'max'],
 };
 
 export function setup() {
@@ -49,6 +58,8 @@ export default function () {
   // Choosing iteration % 5 alone would pin all misses to the same 20 tenants.
   const miss = (Math.floor(iteration / tenants.length) + iteration % tenants.length) % 5 === 4;
   const productId = miss ? productOffset + iteration : 1;
+  const started = Date.now();
+  requestStarted.add(started);
   const response = http.get(`${origin}/products/${productId}`, {
     headers: { 'X-API-Key': tenant.api_key },
     tags: { name: miss ? 'unique' : 'hot' }, timeout: '15s',
@@ -59,6 +70,13 @@ export default function () {
       && response.json('product.id') === productId;
   }
   catch (_) { /* Invalid JSON is a correctness failure. */ }
+  const finished = Date.now();
+  requestFinished.add(finished);
+  allDuration.add(finished - started);
+  completed.add(1);
+  serverErrors.add(response.status >= 500 ? 1 : 0);
+  clientErrors.add(response.status >= 400 && response.status < 500 ? 1 : 0);
+  transportErrors.add(response.status === 0 ? 1 : 0);
   check(response, { 'correct response': () => correct });
   validResponses.add(correct);
   limited.add(response.status === 429);

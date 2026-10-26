@@ -21,7 +21,7 @@ jobs:
       - run: pip install -r requirements.txt PyYAML==6.0.2
       - name: Check isolated configurations and production settings
         run: |
-          python -m unittest benchmarks.test_config -v
+          python -m unittest benchmarks.test_config benchmarks.test_measurement -v
           python -m benchmarks.compose
           for config in benchmarks/generated/*/compose.json; do
             docker compose --project-directory . -f "$config" config --quiet
@@ -30,7 +30,7 @@ jobs:
         run: python -m benchmarks.smoke
   compare:
     # Full experiments require manual dispatch or an explicit opt-in commit.
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-benchmark]') || contains(github.event.head_commit.message, '[check-replicas]')
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[run-benchmark]') || contains(github.event.head_commit.message, '[check-replicas]') || contains(github.event.head_commit.message, '[run-stress]')
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -46,6 +46,9 @@ jobs:
       - name: Check replica startup and short real-gateway load
         if: github.event_name != 'workflow_dispatch' && contains(github.event.head_commit.message, '[check-replicas]') && !contains(github.event.head_commit.message, '[run-benchmark]')
         run: python -m benchmarks.run --cases mysql-replicas combined --rates 10 --duration 5 --repeats 1
+      - name: Stress all four topologies and check recovery
+        if: github.event_name != 'workflow_dispatch' && contains(github.event.head_commit.message, '[run-stress]')
+        run: python -m benchmarks.run --rates 100 200 400 800 1000 --duration 60 --repeats 1 --vus 300 --recovery-rate 100
       - name: Upload measurements and diagnostics (never tenant credentials)
         if: always()
         uses: actions/upload-artifact@v4

@@ -110,7 +110,7 @@ def generate(case):
     }
     services['load'] = {
         'image': 'grafana/k6:0.54.0', 'user': '0:0', 'profiles': ['load'],
-        'entrypoint': ['k6'], 'mem_limit': '512m', 'cpus': 1,
+        'entrypoint': ['k6'], 'mem_limit': '1g', 'cpus': 1,
         'volumes': ['./benchmarks/load.js:/scripts/load.js:ro',
                     f'{private.as_posix()}:/private:ro'],
     }

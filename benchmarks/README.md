@@ -45,6 +45,33 @@ separately; this benchmark does not validate that unchanged deployment.
 
 ## Experiment design
 
+### Increasing-load stress experiment
+
+An explicit `[run-stress]` commit runs all four setups sequentially at
+100, 200, 400, 800 and 1,000 offered requests/second, for 60 seconds per level.
+After a ten-second pause, a final 60-second trial at 100 RPS checks recovery.
+This exploratory sweep has one trial per level; near-limit results need repetition
+before being described as sustainable capacity. No latency SLA is assumed.
+
+The generator preallocates 300 virtual users and keeps that fixed throughout,
+avoiding runtime VU allocation during the sweep. It has one CPU and 1 GiB memory.
+The same gateway, Redis and MySQL resource limits, API-key workload, 100 tenants,
+cache behavior and 2,000/min/app limit are used in all setups. At 1,000 total RPS,
+evenly distributed requests offer about 600/min/app, below that test limit.
+A direct-backend control runs at 2,000 RPS for 30 seconds before each setup.
+
+Resource sampling includes the one-off k6 container and host CPU counters/memory.
+Per-trial timestamps allow analysis of samples within the measured request window,
+separating load from most setup/inspection work. Successful HTTP p95/p99, all-request
+elapsed p95, completed requests, 5xx/4xx/network errors, dropped iterations and
+successful throughput including drain time are retained. Overload threshold failures
+are measurements and do not abort subsequent levels. A green workflow means the
+experiment completed; inspect individual trial thresholds for performance failures.
+
+```sh
+python -m benchmarks.run --rates 100 200 400 800 1000 --duration 60 --repeats 1 --vus 300 --recovery-rate 100
+```
+
 | Case | Gateway | Redis | MySQL |
 | --- | --- | --- | --- |
 | baseline | 3 behind NGINX | 1 standalone | 1 server |
