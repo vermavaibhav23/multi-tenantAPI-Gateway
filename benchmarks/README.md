@@ -4,6 +4,51 @@ This opt-in experiment runs the real gateway, not an endpoint that bypasses it.
 Normal application files, settings, rate limits and Compose deployment are unchanged.
 The branch builds on the forwarding fixes in PR #4.
 
+## Stress results: 26 October 2026
+
+The [increasing-load experiment](https://github.com/vermavaibhav23/multi-tenantAPI-Gateway/actions/runs/40303601383)
+on commit `2292178fe8568d45ca2bb5721a6370834291cdfb` completed all 24 gateway trials:
+five one-minute load levels plus a recovery trial in each of four configurations.
+All configurations kept up at 100 and 200 RPS with zero dropped iterations, and
+all overloaded at 400, 800 and 1,000 offered RPS. The exact transition between
+200 and 400 RPS was not measured. This was one exploratory sweep per topology.
+
+| Setup | p95 at 200 RPS | Successful RPS at 1,000 offered | p95 at 1,000 offered | Dropped iterations at 1,000 offered |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline | 59 ms | 293.19 | 1.62 s | 42,063 |
+| Redis Cluster | 65 ms | 279.76 | 1.95 s | 42,687 |
+| MySQL replicas | 124 ms | 237.82 | 2.52 s | 45,360 |
+| Both | 236 ms | 222.84 | 2.33 s | 46,334 |
+
+Those 223-293 RPS values are completion plateaus during overload, not sustainable
+loss-free capacity. k6 had a fixed 300-VU ceiling: slow responses occupied the
+available VUs, causing scheduled work to remain unsent. Dropped iterations are
+not requests rejected by the gateway. All 285,844 completed measured gateway
+requests were valid, with zero 429, 5xx or transport errors; 338,176 scheduled
+iterations were dropped across the overload trials. Every recovery trial returned
+to approximately 100 RPS with zero drops and p95 of 17.5/20.2/28.2/34.4 ms.
+All four direct-backend controls passed at 2,000 RPS for 30 seconds.
+
+CPU samples point to gateway quotas and shared-host CPU contention. At 1,000
+offered RPS, baseline and Redis-only gateways used approximately one full CPU
+each, at their one-CPU quotas. Median host busy percentages were approximately
+93%, 96%, 99% and 100% respectively. In the MySQL-cluster cases, the gateways,
+Router and extra database processes competed for the same four host CPUs.
+k6 used about 15-18% of one CPU (median), with ample memory headroom; sampled
+MySQL/Redis CPU usage was below their individual quotas. This does not establish
+the independent Redis or MySQL limits. Generator-concurrency sensitivity, longer
+holds and repeated runs near the transition remain untested.
+
+Evidence: [all trials](reports/2026-10-26-stress/comparison.json),
+[environment](reports/2026-10-26-stress/environment.json),
+[time-aligned CPU samples](reports/2026-10-26-stress/resources.json), and
+[controls, topology and recovery](reports/2026-10-26-stress/verification.json).
+The raw artifact records occasional Docker-stats sampling gaps; every measured
+trial retained multiple k6/host samples. The workflow succeeded because the
+experiment completed: 12 overload trials intentionally failed the performance
+thresholds. It is not an all-performance-checks-passed result. Use **Re-run all jobs**
+on the linked run to repeat the exact measured commit.
+
 ## Measured results: 26 October 2026 (IST)
 
 The [full GitHub Actions run](https://github.com/vermavaibhav23/multi-tenantAPI-Gateway/actions/runs/40226915201)

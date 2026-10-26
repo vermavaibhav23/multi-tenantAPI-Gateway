@@ -1,0 +1,323 @@
+{
+  "run_url": "https://github.com/vermavaibhav23/multi-tenantAPI-Gateway/actions/runs/40303601383",
+  "measured_commit": "2292178fe8568d45ca2bb5721a6370834291cdfb",
+  "gateway_trials": 24,
+  "successful_requests": 285844,
+  "dropped_iterations": 338176,
+  "invalid_responses": 0,
+  "rate_limit_responses": 0,
+  "cases": {
+    "baseline": {
+      "backend_control_rps": 2000,
+      "backend_control_valid_fraction": 1,
+      "gateway_preflight_distribution": [
+        10,
+        10,
+        10
+      ],
+      "recovery": {
+        "run": "baseline-recovery-100rps",
+        "target_rps": 100,
+        "duration_seconds": 60,
+        "product_offset": 151005,
+        "measurement_started_at": "2026-10-26T10:05:09.041000+00:00",
+        "measurement_finished_at": "2026-10-26T10:06:09.053000+00:00",
+        "completion_window_seconds": 60.014,
+        "completed_requests": 6001,
+        "successful_requests": 6001,
+        "successful_rps": 99.99333488852601,
+        "offered_work_completed_fraction": 1,
+        "p95_success_ms": 17.518221,
+        "p99_success_ms": 40.902197,
+        "p95_all_request_ms": 18,
+        "invalid_response_fraction": 0,
+        "rate_limited_fraction": 0,
+        "server_errors": 0,
+        "client_errors": 0,
+        "transport_errors": 0,
+        "dropped_iterations": 0,
+        "thresholds_passed": true,
+        "case": "baseline",
+        "repeat": 1,
+        "phase": "recovery"
+      },
+      "database_connections": {
+        "default": {
+          "host": "1d3f52724c73",
+          "read_only": 0,
+          "database": "gatescale_benchmark"
+        }
+      },
+      "mysql_members": {
+        "mysql-1": null
+      },
+      "redis_roles": {
+        "redis-single": "master"
+      }
+    },
+    "redis-cluster": {
+      "backend_control_rps": 2000,
+      "backend_control_valid_fraction": 1,
+      "gateway_preflight_distribution": [
+        10,
+        10,
+        10
+      ],
+      "recovery": {
+        "run": "redis-cluster-recovery-100rps",
+        "target_rps": 100,
+        "duration_seconds": 60,
+        "product_offset": 151005,
+        "measurement_started_at": "2026-10-26T10:12:53.082000+00:00",
+        "measurement_finished_at": "2026-10-26T10:13:53.094000+00:00",
+        "completion_window_seconds": 60.015,
+        "completed_requests": 6001,
+        "successful_requests": 6001,
+        "successful_rps": 99.9916687494793,
+        "offered_work_completed_fraction": 1,
+        "p95_success_ms": 20.231073,
+        "p99_success_ms": 44.804191,
+        "p95_all_request_ms": 21,
+        "invalid_response_fraction": 0,
+        "rate_limited_fraction": 0,
+        "server_errors": 0,
+        "client_errors": 0,
+        "transport_errors": 0,
+        "dropped_iterations": 0,
+        "thresholds_passed": true,
+        "case": "redis-cluster",
+        "repeat": 1,
+        "phase": "recovery"
+      },
+      "database_connections": {
+        "default": {
+          "host": "74e5aed26cd6",
+          "read_only": 0,
+          "database": "gatescale_benchmark"
+        }
+      },
+      "mysql_members": {
+        "mysql-1": null
+      },
+      "redis_roles": {
+        "redis-node-1:6379": "master",
+        "redis-node-5:6379": "slave",
+        "redis-node-2:6379": "master",
+        "redis-node-6:6379": "slave",
+        "redis-node-3:6379": "master",
+        "redis-node-4:6379": "slave"
+      }
+    },
+    "mysql-replicas": {
+      "backend_control_rps": 2000,
+      "backend_control_valid_fraction": 1,
+      "gateway_preflight_distribution": [
+        10,
+        10,
+        10
+      ],
+      "recovery": {
+        "run": "mysql-replicas-recovery-100rps",
+        "target_rps": 100,
+        "duration_seconds": 60,
+        "product_offset": 151005,
+        "measurement_started_at": "2026-10-26T10:21:31.017000+00:00",
+        "measurement_finished_at": "2026-10-26T10:22:31.031000+00:00",
+        "completion_window_seconds": 60.016,
+        "completed_requests": 6001,
+        "successful_requests": 6001,
+        "successful_rps": 99.99000266595574,
+        "offered_work_completed_fraction": 1,
+        "p95_success_ms": 28.248185,
+        "p99_success_ms": 79.906409,
+        "p95_all_request_ms": 28,
+        "invalid_response_fraction": 0,
+        "rate_limited_fraction": 0,
+        "server_errors": 0,
+        "client_errors": 0,
+        "transport_errors": 0,
+        "dropped_iterations": 0,
+        "thresholds_passed": true,
+        "case": "mysql-replicas",
+        "repeat": 1,
+        "phase": "recovery"
+      },
+      "database_connections": {
+        "default": {
+          "host": "9fe5de883da7",
+          "read_only": 0,
+          "database": "gatescale_benchmark"
+        },
+        "replica": {
+          "host": "bd90df2a0a98",
+          "read_only": 1,
+          "database": "gatescale_benchmark"
+        }
+      },
+      "mysql_members": {
+        "mysql-1": [
+          [
+            "mysql-2",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-3",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-1",
+            "ONLINE",
+            "PRIMARY"
+          ]
+        ],
+        "mysql-2": [
+          [
+            "mysql-2",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-3",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-1",
+            "ONLINE",
+            "PRIMARY"
+          ]
+        ],
+        "mysql-3": [
+          [
+            "mysql-2",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-3",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-1",
+            "ONLINE",
+            "PRIMARY"
+          ]
+        ]
+      },
+      "redis_roles": {
+        "redis-single": "master"
+      }
+    },
+    "combined": {
+      "backend_control_rps": 2000,
+      "backend_control_valid_fraction": 1,
+      "gateway_preflight_distribution": [
+        10,
+        10,
+        10
+      ],
+      "recovery": {
+        "run": "combined-recovery-100rps",
+        "target_rps": 100,
+        "duration_seconds": 60,
+        "product_offset": 151005,
+        "measurement_started_at": "2026-10-26T10:30:05.785000+00:00",
+        "measurement_finished_at": "2026-10-26T10:31:05.782000+00:00",
+        "completion_window_seconds": 60,
+        "completed_requests": 6000,
+        "successful_requests": 6000,
+        "successful_rps": 100.0,
+        "offered_work_completed_fraction": 1,
+        "p95_success_ms": 34.35575340000001,
+        "p99_success_ms": 72.72468975000022,
+        "p95_all_request_ms": 35,
+        "invalid_response_fraction": 0,
+        "rate_limited_fraction": 0,
+        "server_errors": 0,
+        "client_errors": 0,
+        "transport_errors": 0,
+        "dropped_iterations": 0,
+        "thresholds_passed": true,
+        "case": "combined",
+        "repeat": 1,
+        "phase": "recovery"
+      },
+      "database_connections": {
+        "default": {
+          "host": "16e8654f6dff",
+          "read_only": 0,
+          "database": "gatescale_benchmark"
+        },
+        "replica": {
+          "host": "61565c2847a4",
+          "read_only": 1,
+          "database": "gatescale_benchmark"
+        }
+      },
+      "mysql_members": {
+        "mysql-1": [
+          [
+            "mysql-2",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-3",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-1",
+            "ONLINE",
+            "PRIMARY"
+          ]
+        ],
+        "mysql-2": [
+          [
+            "mysql-2",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-3",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-1",
+            "ONLINE",
+            "PRIMARY"
+          ]
+        ],
+        "mysql-3": [
+          [
+            "mysql-2",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-3",
+            "ONLINE",
+            "SECONDARY"
+          ],
+          [
+            "mysql-1",
+            "ONLINE",
+            "PRIMARY"
+          ]
+        ]
+      },
+      "redis_roles": {
+        "redis-node-1:6379": "master",
+        "redis-node-5:6379": "slave",
+        "redis-node-2:6379": "master",
+        "redis-node-6:6379": "slave",
+        "redis-node-3:6379": "master",
+        "redis-node-4:6379": "slave"
+      }
+    }
+  }
+}
