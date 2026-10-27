@@ -11,7 +11,6 @@ x-gateway-env: &gateway-env
   REDIS_CLUSTER_URL: redis://redis-node-1:6379
   DJANGO_SECRET_KEY: "${DJANGO_SECRET_KEY:-dev-secret-key-change-me}"
   CLIENT_JWT_SIGNING_KEY: "${CLIENT_JWT_SIGNING_KEY:-}"
-  GATEWAY_CACHEABLE_BACKEND_HOSTS: "${GATEWAY_CACHEABLE_BACKEND_HOSTS-fashion-user-service,fashion-product-service,fashion-order-service}"
   GATEWAY_ALLOWED_BACKEND_ORIGINS: "${GATEWAY_ALLOWED_BACKEND_ORIGINS-http://fashion-user-service:8000,http://fashion-product-service:8000,http://fashion-order-service:8000,http://banking-user-service:8000,http://banking-account-service:8000,http://banking-payment-service:8000,http://healthcare-doctor-service:8000,http://healthcare-appointment-service:8000,http://healthcare-patient-service:8000,http://banking-transaction-service:8000}"
 
 x-gateway-base: &gateway-base
@@ -117,96 +116,6 @@ services:
     depends_on:
       api-gateway-migrate:
         condition: service_completed_successfully
-
-  fashion-user-service:
-    build: .
-    command: python dummy_backend/server.py
-    environment:
-      BACKEND_SERVICE_NAME: fashion-user-service
-      BACKEND_PORT: "8000"
-    expose:
-      - "8000"
-
-  fashion-product-service:
-    build: .
-    command: python dummy_backend/server.py
-    environment:
-      BACKEND_SERVICE_NAME: fashion-product-service
-      BACKEND_PORT: "8000"
-    expose:
-      - "8000"
-
-  fashion-order-service:
-    build: .
-    command: python dummy_backend/server.py
-    environment:
-      BACKEND_SERVICE_NAME: fashion-order-service
-      BACKEND_PORT: "8000"
-    expose:
-      - "8000"
-
-  banking-user-service:
-    build: .
-    command: python dummy_backend/server.py
-    environment:
-      BACKEND_SERVICE_NAME: banking-user-service
-      BACKEND_PORT: "8000"
-    expose:
-      - "8000"
-
-  banking-account-service:
-    build: .
-    command: python dummy_backend/server.py
-    environment:
-      BACKEND_SERVICE_NAME: banking-account-service
-      BACKEND_PORT: "8000"
-    expose:
-      - "8000"
-
-  banking-payment-service:
-    build: .
-    command: python dummy_backend/server.py
-    environment:
-      BACKEND_SERVICE_NAME: banking-payment-service
-      BACKEND_PORT: "8000"
-    expose:
-      - "8000"
-
-  healthcare-doctor-service:
-    build: .
-    command: python dummy_backend/server.py
-    environment:
-      BACKEND_SERVICE_NAME: healthcare-doctor-service
-      BACKEND_PORT: "8000"
-    expose:
-      - "8000"
-
-  healthcare-appointment-service:
-    build: .
-    command: python dummy_backend/server.py
-    environment:
-      BACKEND_SERVICE_NAME: healthcare-appointment-service
-      BACKEND_PORT: "8000"
-    expose:
-      - "8000"
-
-  healthcare-patient-service:
-    build: .
-    command: python dummy_backend/server.py
-    environment:
-      BACKEND_SERVICE_NAME: healthcare-patient-service
-      BACKEND_PORT: "8000"
-    expose:
-      - "8000"
-
-  banking-transaction-service:
-    build: .
-    command: python dummy_backend/server.py
-    environment:
-      BACKEND_SERVICE_NAME: banking-transaction-service
-      BACKEND_PORT: "8000"
-    expose:
-      - "8000"
 
   # Three independent data directories. Do NOT mount the old mysql_data volume
   # into a GR node: migrate existing installations from a verified SQL backup.

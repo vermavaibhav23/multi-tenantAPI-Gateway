@@ -1,7 +1,6 @@
 """Direct per-route Redis cache: hit/miss, invalidation and SQL-only policies."""
 from unittest.mock import patch
 
-import httpx
 import redis
 from django.core.exceptions import ValidationError
 from django.test import override_settings
@@ -92,14 +91,12 @@ class RouteCacheTests(APITestCase):
         self.assertNotEqual(one.backend_service.base_url, two.backend_service.base_url)
 
     def test_method_policy_is_always_checked_against_mysql(self):
-        with patch('gateway.views.GatewayRequestProxy.proxy',
-                   return_value=httpx.Response(200, json={'ok': True})):
-            self.assertEqual(self.client.get('/gateway/doctors/1', HTTP_X_API_KEY=self.key).status_code, 200)
-            # Bulk update bypasses route signals, but the JWT change is still seen.
-            RouteMethod.objects.filter(route=self.route, method='GET').update(
-                auth_policy=RouteMethod.AUTH_API_KEY_AND_JWT,
-            )
-            self.assertEqual(self.client.get('/gateway/doctors/1', HTTP_X_API_KEY=self.key).status_code, 401)
+        self.assertEqual(self.client.get('/gateway/doctors/1', HTTP_X_API_KEY=self.key).status_code, 200)
+        # Bulk update bypasses route signals, but the JWT change is still seen.
+        RouteMethod.objects.filter(route=self.route, method='GET').update(
+            auth_policy=RouteMethod.AUTH_API_KEY_AND_JWT,
+        )
+        self.assertEqual(self.client.get('/gateway/doctors/1', HTTP_X_API_KEY=self.key).status_code, 401)
 
     def test_service_update_and_route_disable_invalidate_cache(self):
         RouteResolver.get_route_for_request(self.project, 'GET', '/doctors/1')
@@ -138,16 +135,13 @@ class RouteCacheTests(APITestCase):
         self.assertEqual(calls[0], 2)
 
     def test_permission_check_remains_fresh(self):
-        with patch('gateway.views.GatewayRequestProxy.proxy',
-                   return_value=httpx.Response(200, json={'ok': True})) as proxy:
-            self.assertEqual(self.client.get('/gateway/doctors/2', HTTP_X_API_KEY=self.key).status_code, 200)
-            other_route = Route.objects.create(
-                project=self.project, name='Patients', base_path='/patients',
-                backend_service=self.service,
-            )
-            RoutePermission.objects.create(application=self.app, route=other_route)
-            self.assertEqual(self.client.get('/gateway/doctors/2', HTTP_X_API_KEY=self.key).status_code, 403)
-            proxy.assert_called_once()
+        self.assertEqual(self.client.get('/gateway/doctors/2', HTTP_X_API_KEY=self.key).status_code, 200)
+        other_route = Route.objects.create(
+            project=self.project, name='Patients', base_path='/patients',
+            backend_service=self.service,
+        )
+        RoutePermission.objects.create(application=self.app, route=other_route)
+        self.assertEqual(self.client.get('/gateway/doctors/2', HTTP_X_API_KEY=self.key).status_code, 403)
 
     def test_nested_base_paths_are_rejected(self):
         with self.assertRaises(ValidationError):

@@ -10,7 +10,7 @@ from users.models import Project
 
 
 class Command(BaseCommand):
-    help = 'Create missing demo projects, services, base routes and method policies; preserve existing entries.'
+    help = 'Create preview-only destination records, routes and method policies; preserve existing entries.'
 
     def add_arguments(self, parser):
         parser.add_argument('--admin-email', required=True, help='Existing active staff account owning the bundles.')
@@ -26,7 +26,7 @@ class Command(BaseCommand):
             project, _ = Project.objects.get_or_create(
                 slug=slug, defaults={
                     'owner': owner, 'name': name,
-                    'description': 'Shared dummy backend bundle for routing demonstrations only.',
+                    'description': 'Virtual destination metadata for gateway request-preview demonstrations.',
                 },
             )
             if project.owner_id != owner.id:
@@ -36,7 +36,7 @@ class Command(BaseCommand):
                 try:
                     validate_backend_base_url(base_url)
                 except ValidationError as exc:
-                    raise CommandError(f'Approve the demo backend origin for {host} before seeding.') from exc
+                    raise CommandError(f'Approve the demo destination origin for {host} before seeding.') from exc
                 service, _ = BackendService.objects.get_or_create(
                     project=project, slug=host,
                     defaults={'name': service_name, 'base_url': base_url},
