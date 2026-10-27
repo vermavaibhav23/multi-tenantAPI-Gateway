@@ -1,14 +1,13 @@
 from unittest.mock import patch
 
-import httpx
 import redis
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
-from django.test import RequestFactory, override_settings
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
 from authentication.models import APIKey, Application, RoutePermission
-from gateway.services import GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RateLimitBackendUnavailable, RouteResolver
+from gateway.services import ProductResponseCache, RedisRateLimiter, RateLimitBackendUnavailable, RouteResolver
 from gateway.test_support import FakeRedisClient
 from routes.destinations import validate_target_url
 from routes.models import BackendService, Route, RouteMethod
@@ -97,31 +96,24 @@ class GatewayRegressionTests(APITestCase):
             name='Echo', base_path='/echo',
         )
         RouteMethod.objects.create(route=other_route, method='GET')
-        with patch('gateway.views.GatewayRequestProxy.proxy',
-                   return_value=httpx.Response(200, json={'ok': True})) as proxy:
-            for key in (self.key, sibling_key, other_key):
-                self.assertEqual(self.get(key).status_code, 200)
-            self.assertEqual(proxy.call_count, 3)
-            self.assertEqual(
-                self.client.post('/gateway/echo', HTTP_X_API_KEY=self.key).status_code, 200
-            )
-            self.assertEqual(self.get(other_key).status_code, 200)
-            self.assertEqual(proxy.call_count, 4)
-            for key in (self.key, sibling_key):
-                self.assertEqual(self.get(key).status_code, 200)
-            self.assertEqual(proxy.call_count, 6)
+        for key, app in ((self.key, self.app), (sibling_key, sibling), (other_key, other_app)):
+            response = self.get(key)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['application_id'], app.id)
+            self.assertEqual(response.json()['target_url'], 'http://fashion-product-service:8000/echo')
+        result = self.client.post('/gateway/echo', {'ok': True},
+            format='json', HTTP_X_API_KEY=self.key)
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()['body'], {'ok': True})
 
     def test_destination_checked_before_cache_and_network(self):
-        with patch('gateway.views.GatewayRequestProxy.proxy',
-                   return_value=httpx.Response(200, json={'ok': True})) as proxy:
-            self.assertEqual(self.get().status_code, 200)
-            with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[]):
-                self.assertEqual(self.get().status_code, 403)
-            with self.captureOnCommitCallbacks(execute=True):
-                self.service.base_url = 'http://169.254.169.254'
-                self.service.save(update_fields=['base_url'])
+        self.assertEqual(self.get().status_code, 200)
+        with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[]):
             self.assertEqual(self.get().status_code, 403)
-            self.assertEqual(proxy.call_count, 1)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.service.base_url = 'http://169.254.169.254'
+            self.service.save(update_fields=['base_url'])
+        self.assertEqual(self.get().status_code, 403)
 
     def test_destination_parser_rejects_origin_bypasses(self):
         for url in [
@@ -138,16 +130,12 @@ class GatewayRegressionTests(APITestCase):
                 validate_target_url(url)
 
     def test_proxy_does_not_follow_redirects_or_environment_proxies(self):
-        with patch('gateway.services.httpx.Client') as client:
-            client.return_value.__enter__.return_value.request.return_value = httpx.Response(
-                302, headers={'location': 'http://169.254.169.254/'}
-            )
-            request = RequestFactory().get('/echo')
-            request.application = self.app
-            response = GatewayRequestProxy.proxy(request, self.service.base_url + '/echo')
-            self.assertEqual(response.status_code, 302)
-            self.assertFalse(client.call_args.kwargs['follow_redirects'])
-            self.assertFalse(client.call_args.kwargs['trust_env'])
+        # Preview never creates a real HTTP request to the virtual destination.
+        with patch('socket.create_connection', side_effect=AssertionError('unexpected network call')):
+            result = self.get()
+        self.assertEqual(result.status_code, 200)
+        self.assertFalse(result.json()['forwarded'])
+        self.assertEqual(result.json()['target_url'], 'http://fashion-product-service:8000/echo')
 
     def test_redis_eval_failure_is_fail_closed(self):
         limiter = RedisRateLimiter()
@@ -156,33 +144,23 @@ class GatewayRegressionTests(APITestCase):
                 limiter.allow_request('test', 1, 600)
 
     def test_gateway_returns_503_and_does_not_proxy_if_redis_goes_down(self):
-        with patch('gateway.services.get_redis_client', side_effect=redis.ConnectionError('offline')), patch(
-            'gateway.views.GatewayRequestProxy.proxy',
-        ) as proxy:
+        with patch('gateway.services.get_redis_client',
+                   side_effect=redis.ConnectionError('offline')):
             response = self.get()
-            self.assertEqual(response.status_code, 503)
-            self.assertIn('Rate limiting temporarily unavailable', response.json()['detail'])
-            proxy.assert_not_called()
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('Rate limiting temporarily unavailable', response.json()['detail'])
 
     def test_gateway_recovers_when_shared_redis_recovers(self):
         shared_redis = FakeRedisClient()
-        with patch('gateway.services.get_redis_client', return_value=shared_redis), patch(
-            'gateway.views.GatewayRequestProxy.proxy',
-            return_value=httpx.Response(200, json={'ok': True}),
-        ) as proxy:
+        with patch('gateway.services.get_redis_client', return_value=shared_redis):
             with patch.object(shared_redis, 'eval', side_effect=redis.ConnectionError('offline')):
                 self.assertEqual(self.get().status_code, 503)
             self.assertEqual(self.get().status_code, 200)
-            proxy.assert_called_once()
 
     def test_actual_limit_exceeded_is_still_429(self):
-        with patch.dict(Application.PLAN_LIMITS, {Application.PLAN_NORMAL: (1, 60)}), patch(
-            'gateway.views.GatewayRequestProxy.proxy',
-            return_value=httpx.Response(200, json={'ok': True}),
-        ) as proxy:
+        with patch.dict(Application.PLAN_LIMITS, {Application.PLAN_NORMAL: (1, 60)}):
             self.assertEqual(self.get().status_code, 200)
             self.assertEqual(self.get().status_code, 429)
-            proxy.assert_called_once()
 
     def test_redis_eval_success_is_enforced(self):
         limiter = RedisRateLimiter()

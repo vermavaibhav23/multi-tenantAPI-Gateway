@@ -1,15 +1,13 @@
 from unittest.mock import patch
 
-import httpx
 import redis
-from django.test import RequestFactory, override_settings
+from django.test import override_settings
 from rest_framework.test import APITestCase
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from authentication.models import APIKey, Application
 from client_auth.models import ApplicationUser
 from client_auth.services import issue_token_pair
-from gateway.services import GatewayRequestProxy, RedisRateLimiter
 from gateway.test_support import FakeRedisClient
 from routes.models import BackendService, Route, RouteMethod
 from users.models import Project, User
@@ -98,11 +96,9 @@ class ClientUserAuthenticationTests(APITestCase):
             self.key_a, email='newpatient@example.com', password='StrongPatientPassword123!'
         )
         self.assertEqual(login.status_code, 200, login.data)
-        with patch('gateway.views.GatewayRequestProxy.proxy',
-                   return_value=httpx.Response(200, json={'ok': True})):
-            self.assertEqual(
-                self._protected(self.key_a, login.data['access']).status_code, 200
-            )
+        validated = self._protected(self.key_a, login.data['access'])
+        self.assertEqual(validated.status_code, 200)
+        self.assertEqual(validated.json()['client_user_id'], user.pk)
 
     def test_register_rejects_missing_invalid_or_revoked_application_api_key(self):
         data = {'email': 'newpatient@example.com', 'password': 'StrongPatientPassword123!'}
@@ -178,19 +174,18 @@ class ClientUserAuthenticationTests(APITestCase):
 
     def test_valid_client_token_passes_to_backend(self):
         token = self._login(self.key_a).data['access']
-        with patch('gateway.views.GatewayRequestProxy.proxy',
-                   return_value=httpx.Response(200, json={'ok': True})) as proxy:
-            resp = self._protected(self.key_a, token)
+        resp = self._protected(self.key_a, token)
         self.assertEqual(resp.status_code, 200, resp.content)
-        self.assertEqual(proxy.call_count, 1)
+        self.assertEqual(resp.json()['client_user_id'], self.client_user_a.pk)
+        self.assertFalse(resp.json()['forwarded'])
 
     def test_client_jwt_cannot_cross_applications_even_if_same_email(self):
         token = self._login(self.key_a).data['access']
         self.assertEqual(self._protected(self.key_b, token).status_code, 401)
         token_b = self._login(self.key_b).data['access']
-        with patch('gateway.views.GatewayRequestProxy.proxy',
-                   return_value=httpx.Response(200, json={'ok': True})):
-            self.assertEqual(self._protected(self.key_b, token_b).status_code, 200)
+        result = self._protected(self.key_b, token_b)
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.json()['client_user_id'], self.client_user_b.pk)
 
     def test_staff_jwt_cannot_authenticate_client_endpoint(self):
         staff = str(RefreshToken.for_user(self.admin).access_token)
@@ -248,30 +243,27 @@ class ClientUserAuthenticationTests(APITestCase):
         token = self._login(self.key_a).data['access']
         self.assertEqual(self._protected(self.key_a, token + 'tampered').status_code, 401)
         self.assertEqual(self.client.get('/gateway/doctors/456',
-                                         HTTP_AUTHORIZATION='Bearer ' + token).status_code, 401)
+            HTTP_AUTHORIZATION='Bearer ' + token).status_code, 401)
         _, rotated = APIKey.create_for_application(self.app_a, 'rotated')
         self.assertEqual(self._protected(self.key_a, token).status_code, 401)
-        with patch('gateway.views.GatewayRequestProxy.proxy',
-                   return_value=httpx.Response(200, json={'ok': True})):
-            self.assertEqual(self._protected(rotated, token).status_code, 200)
+        self.assertEqual(self._protected(rotated, token).status_code, 200)
 
     def test_gateway_passes_verified_identity_not_bearer_or_spoofed_headers(self):
-        req = RequestFactory().get(
+        token = self._login(self.key_a).data['access']
+        result = self.client.get(
             '/gateway/doctors/456',
-            HTTP_AUTHORIZATION='Bearer secret',
+            HTTP_X_API_KEY=self.key_a,
+            HTTP_AUTHORIZATION='Bearer ' + token,
             HTTP_X_GATESCALE_CLIENT_USER_ID='99999',
         )
-        req.application = self.app_a
-        req.client_user = self.client_user_a
-        with patch('gateway.services.httpx.Client') as mocked:
-            mocked.return_value.__enter__.return_value.request.return_value = httpx.Response(
-                200, json={'ok': True},
-            )
-            GatewayRequestProxy.proxy(req, 'http://fashion-product-service:8000/doctors/456')
-        forwarded = mocked.return_value.__enter__.return_value.request.call_args.kwargs['headers']
-        self.assertNotIn('Authorization', forwarded)
-        self.assertEqual(forwarded['X-GateScale-Application-ID'], str(self.app_a.id))
-        self.assertEqual(forwarded['X-GateScale-Client-User-ID'], str(self.client_user_a.id))
+        self.assertEqual(result.status_code, 200)
+        preview = result.json()
+        self.assertEqual(preview['application_id'], self.app_a.pk)
+        self.assertEqual(preview['client_user_id'], self.client_user_a.pk)
+        self.assertNotIn('headers', preview)
+        self.assertNotIn('Authorization', str(preview))
+        self.assertNotIn(token, str(preview))
+        self.assertNotIn(self.key_a, str(preview))
 
     def test_staff_cannot_create_client_for_other_admin_project(self):
         other_staff = User.objects.create_user(username='other', email='other@example.com',

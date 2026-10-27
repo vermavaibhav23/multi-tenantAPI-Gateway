@@ -1,12 +1,12 @@
+import base64
+import json
 import threading
 import time
 
-import httpx
 import redis
 from django.conf import settings
 from django.utils import timezone
 
-from routes.destinations import validate_target_url
 from .route_cache import get_route, route_from_snapshot
 
 from .redis_client import get_redis_client
@@ -64,44 +64,57 @@ class RouteResolver:
         return route_from_snapshot(project.id, entry) if entry is not None else None
 
 
-class GatewayRequestProxy:
+class GatewayRequestPreview:
+    """Build the exact planned destination and safe-to-display request metadata."""
+
     @staticmethod
     def build_target_url(route, route_path):
         normalized_route = RouteResolver.normalize_path(route.base_path)
         normalized_request = RouteResolver.normalize_path(route_path)
         if normalized_request != normalized_route and not normalized_request.startswith(f'{normalized_route}/'):
             raise ValueError('Request path does not match the configured public route.')
-        # route_path is already the requested path after /gateway.
-        # Public and backend paths are intentionally the same in ServLink.
         return route.backend_service.base_url.rstrip('/') + normalized_request
 
     @staticmethod
-    def proxy(request, target_url):
-        validate_target_url(target_url)
-        excluded = {'host', 'content-length', 'connection', 'keep-alive', 'transfer-encoding',
-                    'te', 'trailer', 'upgrade', 'proxy-authorization', 'proxy-authenticate',
-                    'x-api-key', 'x-tenant-id', 'x-application-id', 'authorization'}
-        excluded.update(h.strip().lower() for h in request.headers.get('Connection', '').split(','))
-        headers = {k: v for k, v in request.headers.items()
-                   if k.lower().replace('_', '-') not in excluded and not k.lower().replace('_', '-').startswith('x-gatescale-')}
-        headers['X-GateScale-Application-ID'] = str(request.application.id)
-        if getattr(request, 'client_user', None) is not None:
-            headers['X-GateScale-Client-User-ID'] = str(request.client_user.id)
-        try:
-            with httpx.Client(timeout=10.0, follow_redirects=False, trust_env=False) as client:
-                response = client.request(
-                    method=request.method,
-                    url=target_url,
-                    headers=headers,
-                    content=request.body if request.body else None,
-                    params=request.GET,
-                )
-            return response
-        except httpx.TimeoutException:
-            return None
-        except httpx.RequestError:
-            return None
-
+    def build_payload(request, project, application, route, target_url, auth_policy):
+        # Preserve the original query-string encoding and parameter ordering.
+        query_string = request.META.get('QUERY_STRING', '')
+        full_target_url = f'{target_url}?{query_string}' if query_string else target_url
+        payload = {
+            'status': 'validated',
+            'mode': 'preview',
+            'forwarded': False,
+            'target_url': full_target_url,
+            'method': request.method,
+            'path': RouteResolver.normalize_path(request.path.removeprefix('/gateway')),
+            'query_params': {key: request.GET.getlist(key) for key in request.GET},
+            'application_id': application.pk,
+            'project_id': project.pk,
+            'route_id': route.pk,
+            'backend_service_id': route.backend_service_id,
+            'auth_policy': auth_policy,
+            'client_user_id': getattr(getattr(request, 'client_user', None), 'pk', None),
+        }
+        body = request.body
+        if body:
+            content_type = request.content_type or ''
+            payload['content_type'] = content_type
+            if content_type == 'application/json' or content_type.endswith('+json'):
+                try:
+                    payload['body'] = json.loads(body)
+                    payload['body_encoding'] = 'json'
+                    return payload
+                except (UnicodeDecodeError, ValueError):
+                    pass
+            try:
+                payload['body'] = body.decode('utf-8')
+                payload['body_encoding'] = 'utf-8'
+            except UnicodeDecodeError:
+                payload['body'] = base64.b64encode(body).decode('ascii')
+                payload['body_encoding'] = 'base64'
+        # Never echo API keys, bearer tokens, cookies, or arbitrary headers.
+        # These responses contain user-supplied bodies, so never cache them.
+        return payload
 
 
 class ProductResponseCache:

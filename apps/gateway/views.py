@@ -1,21 +1,20 @@
+import json
 from urllib.parse import urlsplit
 
-from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.http import HttpResponse, JsonResponse
+from django.http import JsonResponse
 from client_auth.services import ClientTokenError, authenticate_client_bearer
 from rest_framework.views import APIView
 
 from routes.destinations import validate_backend_base_url, validate_target_url
 from routes.models import RouteMethod
 
-from .services import GatewayRequestProxy, ProductResponseCache, RedisRateLimiter, RateLimitBackendUnavailable, RouteResolver
-
-
-GATEWAY_CACHE_TTL_SECONDS = 60
+from .services import GatewayRequestPreview, RedisRateLimiter, RateLimitBackendUnavailable, RouteResolver
 
 
 class GatewayProxyView(APIView):
+    """Validate gateway requests, then describe the destination without forwarding."""
+
     authentication_classes = []
     permission_classes = []
 
@@ -39,81 +38,59 @@ class GatewayProxyView(APIView):
         if not project:
             return JsonResponse({'detail': 'No project associated with the API key.'}, status=401)
 
-        def reject(detail, status_code, route=None, error_key='detail'):
+        def reject(detail, status_code, error_key='detail'):
             return JsonResponse({error_key: detail}, status=status_code)
 
         route = RouteResolver.get_route_for_request(project, request.method, route_path)
         if not route:
             return reject('Route not found.', 404)
-        # Method/JWT policies stay in primary MySQL; the Redis cache stores routing only.
+        # Method and JWT policies are read from MySQL, never from the route cache.
         method_policy = RouteMethod.objects.filter(
             route_id=route.pk, method=request.method
         ).values_list('auth_policy', flat=True).first()
         if method_policy is None:
-            return reject('Method not allowed for this route.', 405, route)
+            return reject('Method not allowed for this route.', 405)
         if not request.api_key.can_access(route):
-            return reject('Application is not allowed to access this route.', 403, route)
+            return reject('Application is not allowed to access this route.', 403)
         if method_policy == RouteMethod.AUTH_API_KEY_AND_JWT:
             try:
                 request.client_user = authenticate_client_bearer(
                     request.headers.get('Authorization'), request.application
                 )
             except ClientTokenError:
-                return reject('Invalid or missing application-user token.', 401, route)
+                return reject('Invalid or missing application-user token.', 401)
 
         application = getattr(request, 'application', None)
         if not application:
-            return reject('API key is not linked to an active application.', 401, route)
+            return reject('API key is not linked to an active application.', 401)
         limit, window_seconds = application.resolved_rate_limit()
         rate_key = f'gateway_rate:application:{application.id}'
         try:
             allowed = RedisRateLimiter().allow_request(rate_key, limit, window_seconds)
         except RateLimitBackendUnavailable:
-            return reject('Rate limiting temporarily unavailable. Please retry later.', 503, route)
+            return reject('Rate limiting temporarily unavailable. Please retry later.', 503)
         if not allowed:
-            return reject('Rate limit exceeded', 429, route, error_key='error')
+            return reject('Rate limit exceeded', 429, error_key='error')
 
+        # Service rows remain as virtual destination metadata. No HTTP client
+        # is created and no destination is contacted in preview mode.
         if not route.backend_service or not route.backend_service.base_url:
-            return reject('No healthy backends for this route.', 503, route)
+            return reject('No destination configured for this route.', 503)
         try:
             validate_backend_base_url(route.backend_service.base_url)
-            target_url = GatewayRequestProxy.build_target_url(route, route_path)
+            target_url = GatewayRequestPreview.build_target_url(route, route_path)
             validate_target_url(target_url)
         except (ValidationError, ValueError):
-            return reject('Backend destination is not allowed.', 403, route)
-        cache_client = ProductResponseCache()
-        cache_key = None
-        app_cache_prefix = f'gateway_cache:v3:{application.id}:'
-        cache_allowed = (
-            request.method == 'GET' and method_policy == RouteMethod.AUTH_API_KEY_ONLY
-            and urlsplit(target_url).hostname in settings.GATEWAY_CACHEABLE_BACKEND_HOSTS
-            and not request.headers.get('Authorization') and not request.headers.get('Cookie')
-            and not getattr(request.user, 'is_authenticated', False)
-            and not request.body
+            return reject('Backend destination is not allowed.', 403)
+
+        return JsonResponse(
+            GatewayRequestPreview.build_payload(
+                request=request,
+                project=project,
+                application=application,
+                route=route,
+                target_url=target_url,
+                auth_policy=method_policy,
+            ),
+            status=200,
         )
-        if cache_allowed:
-            query_string = request.META.get('QUERY_STRING', '')
-            cache_target_url = f'{target_url}?{query_string}' if query_string else target_url
-            # This key is only safe for approved non-personalized, API-key-only GETs.
-            cache_key = f'{app_cache_prefix}{cache_target_url}'
-            cached = cache_client.get(cache_key)
-            if cached is not None:
-                return HttpResponse(cached, status=200, content_type='application/json')
-        elif request.method in {'POST', 'PUT', 'PATCH', 'DELETE'}:
-            # Mutations of shared project services can affect all applications.
-            # Invalidate each application's cached GETs, not just the writer's.
-            for app_id in project.applications.values_list('id', flat=True):
-                cache_client.invalidate_prefix(f'gateway_cache:v3:{app_id}:')
-
-        response = GatewayRequestProxy.proxy(request, target_url)
-
-        if response is None:
-            return JsonResponse({'detail': 'Backend unavailable.'}, status=503)
-
-        content_type = response.headers.get('content-type', 'application/json')
-        cache_control = response.headers.get('cache-control', '').lower()
-        if (cache_key and response.status_code == 200 and 'application/json' in content_type
-                and not response.headers.get('set-cookie') and not response.headers.get('vary')
-                and not any(directive in cache_control for directive in ('no-store', 'no-cache', 'private'))):
-            cache_client.set(cache_key, response.text, GATEWAY_CACHE_TTL_SECONDS)
-        return HttpResponse(response.content, status=response.status_code, content_type=content_type)

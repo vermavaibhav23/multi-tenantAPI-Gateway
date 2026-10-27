@@ -1,19 +1,15 @@
 import io
 import os
-from http.server import ThreadingHTTPServer
-from threading import Thread
 from unittest import skipUnless
 from unittest.mock import patch
 from uuid import uuid4
 
-import httpx
 import redis
 from django.core.management import call_command, CommandError
 from django.test import SimpleTestCase, override_settings
 from rest_framework.test import APITestCase
 
 from authentication.models import APIKey, Application, RoutePermission
-from dummy_backend.server import DummyBackendHandler
 from gateway.services import ProductResponseCache, RedisRateLimiter
 from gateway.test_support import FakeRedisClient
 from gateway.route_cache import invalidate_project_routes
@@ -50,24 +46,6 @@ class BaaSIntegrationTests(APITestCase):
         self.client.force_authenticate(None)
         return Application.objects.get(pk=result.data['id']), result.data['api_key']['key']
 
-    def backend(self, service_name='healthcare-doctor-service'):
-        received = []
-        class Handler(DummyBackendHandler):
-            def _send_response(self):
-                received.append(dict(self.headers))
-                super()._send_response()
-
-        Handler.service_name = service_name
-        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        thread = Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        def cleanup():
-            server.shutdown()
-            server.server_close()
-            thread.join(timeout=2)
-        self.addCleanup(cleanup)
-        return f'http://127.0.0.1:{server.server_address[1]}', received
-
     def get(self, key=None, path='/doctors', **headers):
         return self.client.get('/gateway' + path, HTTP_X_API_KEY=key or self.key, **headers)
 
@@ -100,52 +78,46 @@ class BaaSIntegrationTests(APITestCase):
             call_command('seed_demo', admin_email=other.email, stdout=io.StringIO())
 
     def test_two_businesses_share_one_backend_but_have_distinct_identity(self):
-        origin, received = self.backend()
-        BackendService.objects.filter(pk=self.doctor_route().backend_service_id).update(base_url=origin)
-        with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin]):
-            for app, key in ((self.app, self.key), (self.other_app, self.other_key)):
-                result = self.get(
-                    key, HTTP_X_GATESCALE_APPLICATION_ID='9999',
-                    HTTP_CONNECTION='X-GateScale-Application-ID'
-                )
-                self.assertEqual(result.status_code, 200)
-                self.assertEqual(result.json()['application_id'], app.id)
-                self.assertEqual(result.json()['backend_service'], 'healthcare-doctor-service')
-        self.assertEqual(len(received), 2)
-        for headers in received:
-            lower = {key.lower(): value for key, value in headers.items()}
-            self.assertNotIn('x-api-key', lower)
-            self.assertNotEqual(lower.get('x-gatescale-application-id'), '9999')
+        for app, key in ((self.app, self.key), (self.other_app, self.other_key)):
+            result = self.get(
+                key, HTTP_X_GATESCALE_APPLICATION_ID='9999',
+                HTTP_CONNECTION='X-GateScale-Application-ID',
+            )
+            self.assertEqual(result.status_code, 200)
+            data = result.json()
+            self.assertEqual(data['application_id'], app.id)
+            self.assertEqual(data['target_url'],
+                             'http://healthcare-doctor-service:8000/doctors')
+            self.assertFalse(data['forwarded'])
+            self.assertNotIn('headers', data)
 
     def test_all_nine_backends_accept_five_methods(self):
         for slug, (_, services) in INDUSTRY_BUNDLES.items():
             project = Project.objects.get(slug=slug)
             _, key = self.create_business(project, 'Test client', 'premium')
             for _, host, path in services:
-                origin, received = self.backend(host)
-                BackendService.objects.filter(project=project, slug=host).update(base_url=origin)
-                invalidate_project_routes(project.id)  # Bulk QuerySet.update bypasses model signals.
-                with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin]):
-                    for method, _ in RouteMethod.METHOD_CHOICES:
-                        with self.subTest(host=host, method=method):
-                            result = self.client.generic(
-                                method, '/gateway' + path, data=b'dummy body',
-                                content_type='application/octet-stream',
-                                HTTP_X_API_KEY=key,
-                            )
-                            self.assertEqual(result.status_code, 200)
-                            self.assertEqual(result.json()['backend_service'], host)
-                            self.assertEqual(result.json()['method'], method)
-                self.assertEqual(len(received), 5)
+                for method, _ in RouteMethod.METHOD_CHOICES:
+                    with self.subTest(host=host, method=method):
+                        result = self.client.generic(
+                            method, '/gateway' + path, data=b'dummy body',
+                            content_type='application/octet-stream',
+                            HTTP_X_API_KEY=key,
+                        )
+                        self.assertEqual(result.status_code, 200)
+                        data = result.json()
+                        self.assertEqual(data['backend_service_id'],
+                                         project.routes.get(base_path=path).backend_service_id)
+                        self.assertEqual(data['target_url'], f'http://{host}:8000{path}')
+                        self.assertEqual(data['method'], method)
+                        self.assertEqual(data['body'], 'dummy body')
+                        self.assertEqual(data['body_encoding'], 'utf-8')
 
     def test_cross_project_and_route_permissions(self):
-        with patch('gateway.views.GatewayRequestProxy.proxy') as proxy:
-            self.assertEqual(self.get(path='/accounts').status_code, 404)
-            RoutePermission.objects.create(
-                application=self.app, route=self.project.routes.get(base_path='/patients')
-            )
-            self.assertEqual(self.get().status_code, 403)
-            proxy.assert_not_called()
+        self.assertEqual(self.get(path='/accounts').status_code, 404)
+        RoutePermission.objects.create(
+            application=self.app, route=self.project.routes.get(base_path='/patients')
+        )
+        self.assertEqual(self.get().status_code, 403)
 
     def test_disabled_service_or_route_is_rejected(self):
         route = self.doctor_route()
@@ -159,25 +131,26 @@ class BaaSIntegrationTests(APITestCase):
         _, rotated = APIKey.create_for_application(self.app, 'rotated')
         self.assertEqual(APIKey.objects.filter(application=self.app).count(), 1)
         self.assertEqual(self.get(key=self.key).status_code, 401)
-        with patch('gateway.views.GatewayRequestProxy.proxy',
-                   return_value=httpx.Response(200, json={'ok': True})):
-            self.assertEqual(self.get(key=rotated).status_code, 200)
+        self.assertEqual(self.get(key=rotated).status_code, 200)
 
     def test_cache_is_per_application_and_mutations_invalidate(self):
-        origin, received = self.backend('fashion-product-service')
-        BackendService.objects.filter(pk=self.doctor_route().backend_service_id).update(base_url=origin)
-        with override_settings(
-            GATEWAY_ALLOWED_BACKEND_ORIGINS=[origin],
-            GATEWAY_CACHEABLE_BACKEND_HOSTS=['127.0.0.1'],
-        ):
-            for _ in range(2):
-                self.assertEqual(self.get().json()['application_id'], self.app.id)
-                self.assertEqual(self.get(self.other_key).json()['application_id'], self.other_app.id)
-            self.assertEqual(len(received), 2)
-            self.client.post('/gateway/doctors', HTTP_X_API_KEY=self.key)
-            self.get()
-            self.get(self.other_key)
-            self.assertEqual(len(received), 5)
+        # The final request preview is regenerated; it is never response-cached.
+        first = self.get().json()
+        other = self.get(self.other_key).json()
+        self.assertNotEqual(first['application_id'], other['application_id'])
+        self.assertEqual(first['target_url'], other['target_url'])
+        service = self.doctor_route().backend_service
+        service.base_url = 'http://healthcare-patient-service:8000'
+        with override_settings(GATEWAY_ALLOWED_BACKEND_ORIGINS=[
+            'http://healthcare-patient-service:8000',
+        ]):
+            service.save(update_fields=['base_url'])
+            with self.captureOnCommitCallbacks(execute=True):
+                invalidate_project_routes(self.project.id)
+            updated = self.get()
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()['target_url'],
+                         'http://healthcare-patient-service:8000/doctors')
 
     def test_jwt_policy_bypasses_cache(self):
         policy = self.doctor_route().method_policies.get(method='GET')
@@ -185,7 +158,6 @@ class BaaSIntegrationTests(APITestCase):
         policy.save(update_fields=['auth_policy'])
         self.assertEqual(self.get().status_code, 401)
         self.assertFalse(ProductResponseCache._memory_store)
-
 
 
 class ManagementAccessTests(APITestCase):
