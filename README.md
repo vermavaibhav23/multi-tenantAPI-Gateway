@@ -1,6 +1,6 @@
-# ServLink — Multi-Tenant API Gateway (Request Preview Mode)
+# GateScale — Multi-Tenant API Gateway (Request Preview Mode)
 
-ServLink is a **Django REST Framework gateway demonstration**. It validates API keys, resolves multi-tenant routes, enforces route-method and application permissions, optionally verifies application-user JWTs, and applies a shared Redis rate limit. **Instead of contacting backend microservices, it returns a JSON preview of where the request would be sent.**
+GateScale is a **Django REST Framework gateway demonstration**. It validates API keys, resolves multi-tenant routes, enforces route-method and application permissions, optionally verifies application-user JWTs, and applies a shared Redis rate limit. **Instead of contacting backend microservices, it returns a JSON preview of where the request would be sent.**
 
 **There are no backend service containers or outbound service calls in this mode.** The `BackendService` records are *virtual destination configurations*, not running services. This is a **routing and security simulation**, not a full functioning HTTP reverse proxy.
 
@@ -190,7 +190,7 @@ The service origin must be added to `GATEWAY_ALLOWED_BACKEND_ORIGINS` if it diff
 
 ## Limits and honest scope
 
-- ServLink currently demonstrates **authenticating, authorizing, rate limiting, and resolving requests**, then reporting their intended destination.
+- GateScale currently demonstrates **authenticating, authorizing, rate limiting, and resolving requests**, then reporting their intended destination.
 - It does **not** demonstrate a downstream HTTP round trip, real microservice availability, backend failures, request forwarding, backend cache hits, or end-to-end throughput of a reverse proxy.
 - `ProductResponseCache` remains as an internal, separately tested cache utility for future use, but **gateway previews never use it**. Storing previews in the former GET response cache would create unnecessary stale or sensitive responses.
 - Request bodies are reflected to their original callers and should not be logged or stored. Avoid submitting real secrets as test bodies.
